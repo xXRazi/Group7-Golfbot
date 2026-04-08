@@ -29,13 +29,10 @@ tank = MoveTank(OUTPUT_A, OUTPUT_D)
 # Tuning values
 DEFAULT_TURN_SPEED = 20
 DEGREES_PER_TURN_UNIT = 5
-# Example: if angle byte is 90, motors rotate 90 * 5 = 450 degrees in opposite directions.
-# You will probably need to tune this value for your robot.
 
-# Calibration trims applied to future motor commands.
-# Positive trim increases that motor's power.
-left_trim = 0
-right_trim = 0
+# Speed values for motors. Values are set using calibration command.
+left_trim = 30
+right_trim = 30
 
 
 class Command:
