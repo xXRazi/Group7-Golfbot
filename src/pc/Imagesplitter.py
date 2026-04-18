@@ -62,17 +62,3 @@ def create_matrix(img_):
         print(" ".join(row))
     return col_matrix
 
-def id_white(matrix):
-
-    row = len(matrix)
-    col = len(matrix[0])
-
-    whites_list = []
-
-    for i in range(row):
-        for j in range(col):
-            if(matrix[i][j] == "W"):
-                whites_list.append((i, j))
-
-    return whites_list
-

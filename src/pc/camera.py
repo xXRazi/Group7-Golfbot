@@ -1,7 +1,8 @@
 import cv2 as cv
 import os
 import time
-from Imagesplitter import create_matrix, id_white
+from Imagesplitter import create_matrix
+from id_color import id_color
 
 allocatedTime = 1
 startTime = time.time()
@@ -29,7 +30,7 @@ while camera.isOpened():
             color_matrix = create_matrix(full_path)
 
             #test to show white_lists
-            white_list = id_white(color_matrix)
+            white_list = id_color(color_matrix, "W")
             print(white_list)
 
 
