@@ -1,7 +1,7 @@
 import cv2 as cv
 import os
 import time
-from ImageSplitter import create_matrix
+from Imagesplitter import create_matrix
 
 allocatedTime = 1
 startTime = time.time()
