@@ -2,28 +2,46 @@
 import socket
 
 from motor_control import MotorController
-from command_handling import CommandHandler
+from command_handler import CommandHandler
 
 HOST = "0.0.0.0"
 PORT = 5000
+RECV_CHUNK_SIZE = 2048
 
 
-def loop(conn, command_handler):
+def loop(conn, command_handler, motor_controller):
+    buffer = bytearray()
+
     while True:
-        data_buf = conn.recv(16)
+        chunk = conn.recv(RECV_CHUNK_SIZE)
 
-        if not data_buf:
+        if not chunk:
             print("Client disconnected")
-            command_handler.motor_controller.stop()
+            motor_controller.stop()
             break
 
-        if not command_handler.handle_command(data_buf):
-            break
+        buffer.extend(chunk)
 
-        print("Received raw bytes:", list(data_buf))
+        while buffer:
+            expected_length = command_handler.get_expected_length(buffer)
 
-        response = b"EV3 got command\n"
-        conn.sendall(response)
+            if expected_length is None:
+                # Need more bytes before we know how large the command is.
+                break
+
+            if len(buffer) < expected_length:
+                # Full command has not arrived yet.
+                break
+
+            command_bytes = bytes(buffer[:expected_length])
+            del buffer[:expected_length]
+
+            if not command_handler.handle_command(command_bytes):
+                motor_controller.stop()
+                return
+
+            print("Received raw bytes:", list(command_bytes))
+            conn.sendall(b"EV3 got command\n")
 
 
 def main():
@@ -40,7 +58,7 @@ def main():
         conn, addr = server.accept()
         with conn:
             print("Connected by {}".format(addr))
-            loop(conn, command_handler)
+            loop(conn, command_handler, motor_controller)
 
 
 if __name__ == "__main__":

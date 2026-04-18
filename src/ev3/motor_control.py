@@ -2,13 +2,14 @@
 import math
 from ev3dev2.motor import OUTPUT_A, OUTPUT_D, MoveTank, SpeedPercent
 
+
 class MotorController:
     DEFAULT_TURN_SPEED = 20
     DEFAULT_DRIVE_SPEED = 30
 
-    # Calibration constants - tune these for your robot
-    DEGREES_PER_TURN_DEGREE = 5       # motor degrees needed for 1 degree robot turn
-    DEGREES_PER_CM = 20               # motor degrees needed to drive 1 cm forward
+    # Tune these for your robot.
+    DEGREES_PER_TURN_DEGREE = 5
+    DEGREES_PER_CM = 20
 
     def __init__(self, left_output=OUTPUT_A, right_output=OUTPUT_D):
         self.tank = MoveTank(left_output, right_output)
@@ -77,8 +78,7 @@ class MotorController:
         Positive = right turn
         Negative = left turn
         """
-        angle = (angle + 180) % 360 - 180
-        return angle
+        return (angle + 180) % 360 - 180
 
     def set_heading(self, heading):
         """Manually set the robot heading."""
@@ -111,11 +111,9 @@ class MotorController:
         print("TURN angle={}, speed={}".format(angle, speed))
 
         if angle > 0:
-            # Turn right in place
             left_cmd = speed
             right_cmd = -speed
         else:
-            # Turn left in place
             left_cmd = -speed
             right_cmd = speed
 
@@ -129,7 +127,6 @@ class MotorController:
             block=True,
         )
 
-        # Update stored heading after turn
         self.heading = self.normalize_heading(self.heading + angle)
         print("HEADING now {:.1f}".format(self.heading))
 
@@ -172,7 +169,6 @@ class MotorController:
             block=True,
         )
 
-        # Update stored position after move
         heading_rad = math.radians(self.heading)
         self.x += distance_cm * math.cos(heading_rad)
         self.y += distance_cm * math.sin(heading_rad)
@@ -183,14 +179,13 @@ class MotorController:
         """
         Turn toward the target coordinate, then drive straight to it.
         """
-        dx = target_x - self.x
-        dy = target_y - self.y
+        dx = float(target_x) - self.x
+        dy = float(target_y) - self.y
 
         if dx == 0 and dy == 0:
             print("GOTO already at target x={}, y={}".format(target_x, target_y))
             return
 
-        # atan2 gives angle from +X axis, matching our heading convention
         target_heading = math.degrees(math.atan2(dy, dx))
         target_heading = self.normalize_heading(target_heading)
 
@@ -200,9 +195,13 @@ class MotorController:
         print(
             "GOTO target=({:.1f}, {:.1f}) current=({:.1f}, {:.1f}) "
             "target_heading={:.1f} turn_angle={:.1f} distance={:.1f}".format(
-                target_x, target_y,
-                self.x, self.y,
-                target_heading, turn_angle, distance_cm
+                float(target_x),
+                float(target_y),
+                self.x,
+                self.y,
+                target_heading,
+                turn_angle,
+                distance_cm,
             )
         )
 

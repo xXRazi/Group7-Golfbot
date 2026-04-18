@@ -3,7 +3,7 @@ import socket
 import sys
 
 
-HOST = "ev3dev.local"   # Change to your EV3 IP
+HOST = "ev3dev.local"
 PORT = 5000
 
 

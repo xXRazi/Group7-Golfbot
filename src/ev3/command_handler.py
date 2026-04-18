@@ -32,9 +32,11 @@ def sendmap_length(data):
     SENDMAP format:
     [CMD][ROWS][COLS][MAP...]
     Total length = 3 + rows * cols
+
+    Returns None until enough header bytes are present to know the full size.
     """
     if len(data) < 3:
-        return 3
+        return None
 
     rows = data[1]
     cols = data[2]
@@ -54,6 +56,10 @@ class Command:
 
     def execute(self, data):
         expected_length = self.get_expected_length(data)
+
+        if expected_length is None:
+            print("Command 0x{:X} does not yet have enough header bytes".format(self.code))
+            return False
 
         if len(data) < expected_length:
             print(
@@ -90,18 +96,40 @@ class CommandHandler:
             FINISH: Command(FINISH, FINISH_LENGTH, self.finish_command),
         }
 
+    def get_expected_length(self, data):
+        """
+        Determine how many bytes are needed for the next command in the buffer.
+
+        Returns:
+            int  -> full command length is known
+            None -> need more bytes before the length can be determined
+        """
+        if not data:
+            return None
+
+        cmd_code = data[0]
+        command = self.commands.get(cmd_code)
+
+        if command is None:
+            # One byte is enough to know it's invalid.
+            return 1
+
+        return command.get_expected_length(data)
+
     def handshake(self, data):
         print("HANDSHAKE")
 
     def goto(self, data):
-        x, y = data[1], data[2]
+        x = data[1]
+        y = data[2]
         print("GO TO({}, {})".format(x, y))
-        # TODO implement pathfinding from current position
+        self.motor_controller.goto(x, y)
 
     def position_sync(self, data):
-        x, y = data[1], data[2]
+        x = data[1]
+        y = data[2]
         print("POSITION SYNCHRONIZATION to ({}, {})".format(x, y))
-        # TODO use this for correction / navigation logic
+        self.motor_controller.set_position(x, y)
 
     def turn(self, data):
         angle = byte_to_signed(data[1])
