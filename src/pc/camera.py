@@ -1,11 +1,11 @@
 import cv2 as cv
 import os
 import time
-from Imagesplitter import create_matrix
+from Imagesplitter import create_matrix, id_white
 
 allocatedTime = 1
 startTime = time.time()
-path = "DIN PATH HER, BOZO"
+path = "C:/Users/ronik/Desktop/ComputerEngineering/4_Semester/CDIO_project/Img_CDIO"
 
 camera = cv.VideoCapture(0)
 
@@ -27,6 +27,11 @@ while camera.isOpened():
             count += 1
             print("Vi tager et billede")
             color_matrix = create_matrix(full_path)
+
+            #test to show white_lists
+            white_list = id_white(color_matrix)
+            print(white_list)
+
 
     cv.imshow("camera", frame)
 
