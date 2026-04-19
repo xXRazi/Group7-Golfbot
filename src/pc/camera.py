@@ -2,7 +2,7 @@ import cv2 as cv
 import os
 import time
 from Imagesplitter import create_matrix
-from id_color import id_color
+from id_color import ball_pos_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star
 
@@ -34,8 +34,8 @@ while camera.isOpened():
             color_matrix = create_matrix(full_path)
 
             #test to show white_lists
-            white_list = id_color(color_matrix, "W")
-            #print(white_list)
+            white_list = ball_pos_approx(color_matrix, "W")
+            print(white_list)
             A_star(color_matrix, white_list[0],white_list[-1])
 
 
