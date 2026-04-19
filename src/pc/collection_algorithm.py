@@ -13,8 +13,6 @@ COL = 640
 #ROW = 62
 #COL = 110
 
-distance_list = []
-
 """
 
 class Cell:
@@ -38,12 +36,11 @@ class test_Cell:
 
 
 
-def set_destination(row, col, dest_y,dest_x):
+def destination(row, col, dest_y,dest_x):
     return col == dest_x and row == dest_y
 
 def get_h(ry, rx, by, bx):
     distance:int = ((rx-bx)**2 + (ry-by)**2)**0.5
-    distance_list.append(distance)
     return distance
 
 def trace_path(cell,dx,dy):
@@ -75,15 +72,10 @@ def is_valid(row,col):
 Get heuristic skal have en liste af distances fra bold til robot,
 så skal vi finde max i listen når vi er færdige
 """
-def get_heuristic()->float:
-    max_d = 0
-    for d in distance_list:
-        if d > max_d:
-            max_d=d
-    return max_d
 
 def is_unblocked(grid, row, col):
-    return grid[row][col] == '.'
+    if grid[row][col] == '.' or grid[row][col] == 'W':
+        return True
 
 def A_star(color_matrix, src, dest):
 
@@ -93,7 +85,7 @@ def A_star(color_matrix, src, dest):
     if not is_unblocked(color_matrix, src[0], src[1]) or not is_unblocked(color_matrix, dest[0], dest[1]):
         return "Source or destination is blocked"
 
-    if set_destination(src[0],src[1],dest[0],dest[1]):
+    if destination(src[0],src[1],dest[0],dest[1]):
         return "We are already there, bozo"
 
     closed_list = [[False for _ in range(COL)] for _ in range(ROW)]
@@ -127,7 +119,7 @@ def A_star(color_matrix, src, dest):
             new_col = col + dir[1]
 
             if is_valid(new_row,new_col) and is_unblocked(color_matrix, new_row, new_col) and not closed_list[new_row][new_col]:
-                if set_destination(new_row, new_col, dest[0], dest[1]):
+                if destination(new_row, new_col, dest[0], dest[1]):
                     cell_details[new_row][new_col].parent_row = row
                     cell_details[new_row][new_col].parent_col = col
                     print("destination cell found")
