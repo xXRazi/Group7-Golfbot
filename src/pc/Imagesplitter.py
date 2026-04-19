@@ -8,8 +8,8 @@ def create_matrix(img_):
 
     arr = np.stack([img])
 
-    block_h = 16
-    block_w = 16
+    block_h = 1
+    block_w = 1
 
     n, H, W, C = arr.shape
 
@@ -58,7 +58,7 @@ def create_matrix(img_):
 
         # --- 4. Print the Resulting Matrix ---
     print(f"Matrix Size: {nH} rows x {nW} columns\n")
-    for row in col_matrix:
-        print(" ".join(row))
+    #for row in col_matrix:
+     #   print(" ".join(row))
     return col_matrix
 
