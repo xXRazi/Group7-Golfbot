@@ -3,12 +3,16 @@ import os
 import time
 from Imagesplitter import create_matrix
 from id_color import id_color
+from dotenv import load_dotenv
+from collection_algorithm import A_star
 
 allocatedTime = 1
 startTime = time.time()
-path = "C:/Users/ronik/Desktop/ComputerEngineering/4_Semester/CDIO_project/Img_CDIO"
 
-camera = cv.VideoCapture(0)
+load_dotenv()
+path = os.getenv("path")
+
+camera = cv.VideoCapture(1)
 
 res, frame = camera.read()
 count = 0
@@ -31,7 +35,9 @@ while camera.isOpened():
 
             #test to show white_lists
             white_list = id_color(color_matrix, "W")
-            print(white_list)
+            #print(white_list)
+            A_star(color_matrix, white_list[0],white_list[-1])
+
 
 
     cv.imshow("camera", frame)
