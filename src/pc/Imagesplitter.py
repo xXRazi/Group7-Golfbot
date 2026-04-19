@@ -1,6 +1,6 @@
 from skimage import io
 from matplotlib import pyplot as plt
-from color_detection import *
+import numpy as np
 import cv2 as cv
 
 def create_matrix(img_):
