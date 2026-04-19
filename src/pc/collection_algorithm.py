@@ -151,7 +151,7 @@ def A_star(color_matrix, src, dest):
 
 
 
-def main():
+def test():
     # Define the grid (1 for unblocked, 0 for blocked)
     grid = [
         [1, 0, 1, 1, 1, 1, 0, 1, 1, 1],
@@ -172,5 +172,5 @@ def main():
     # Run the A* search algorithm
     A_star(grid, src, dest)
 
-main()
+test()
 
