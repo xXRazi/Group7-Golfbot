@@ -15,7 +15,7 @@ def ball_pos_approx(matrix, color):
 
     for i in color_list:
         checks = 0
-
+#
         for dir in last_ball_pos:
             new_row = i[0] + dir[0]
             new_col = i[1] + dir[1]
