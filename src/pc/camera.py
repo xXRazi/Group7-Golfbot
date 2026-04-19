@@ -9,6 +9,8 @@ from collection_algorithm import A_star
 allocatedTime = 1
 startTime = time.time()
 
+robot_pos = (100, 100)
+
 load_dotenv()
 path = os.getenv("path")
 
@@ -35,7 +37,10 @@ while camera.isOpened():
 
             #test to show white_lists
             white_list = ball_pos_approx(color_matrix, "W")
-            print(white_list)
+            temp_list = [robot_pos]
+            if white_list[0] == None:
+                white_list = temp_list
+            print(white_list[0])
             A_star(color_matrix, white_list[0],white_list[-1])
 
 

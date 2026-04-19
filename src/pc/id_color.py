@@ -49,7 +49,7 @@ def ball_pos_approx(matrix, color):
                     continue
 
                 for k in same_ball:
-                    if abs(k[0] - j[0]) <= 1 and abs(k[1] - j[1]) <= 1:
+                    if abs(k[0] - j[0]) <= 4 and abs(k[1] - j[1]) <= 4:
                         same_ball.append(j)
                         used.append(j)
                         changed = True
