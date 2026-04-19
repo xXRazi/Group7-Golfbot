@@ -3,6 +3,7 @@ def ball_pos_approx(matrix, color):
     row = len(matrix)
     col = len(matrix[0])
 
+    #test
     color_list = []
     color_list_final = []
 
