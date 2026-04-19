@@ -1,10 +1,9 @@
 def ball_pos_approx(matrix, color):
-
     row = len(matrix)
     col = len(matrix[0])
 
-    #test
     color_list = []
+    candidate_list = []
     color_list_final = []
 
     for i in range(row):
@@ -15,8 +14,7 @@ def ball_pos_approx(matrix, color):
     last_ball_pos = [(1, 0), (1, 1), (0, 1)]
 
     for i in color_list:
-        right_check = False
-        diagonal_check = False
+        checks = 0
 
         for dir in last_ball_pos:
             new_row = i[0] + dir[0]
@@ -24,14 +22,29 @@ def ball_pos_approx(matrix, color):
 
             if 0 <= new_row < row and 0 <= new_col < col:
                 if matrix[new_row][new_col] != color:
-                    if not right_check:
-                        right_check = True
-                    elif not diagonal_check:
-                        diagonal_check = True
-                        last_id = i
+                    checks += 1
+            else:
+                checks += 1
 
-        if right_check and diagonal_check:
-            final_color_spot = (last_id[1]//2, last_id[0]//2)
-            color_list_final.append(final_color_spot)
+        if checks == 3:
+            candidate_list.append(i)
+
+    used = []
+
+    for i in candidate_list:
+        if i in used:
+            continue
+
+        same_ball = [i]
+        used.append(i)
+
+        for j in candidate_list:
+            if j not in used:
+                if abs(i[0] - j[0]) <= 1 and abs(i[1] - j[1]) <= 1:
+                    same_ball.append(j)
+                    used.append(j)
+
+        last_pixel = max(same_ball, key=lambda p: (p[0], p[1]))
+        color_list_final.append(last_pixel)
 
     return color_list_final
