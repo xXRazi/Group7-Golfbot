@@ -4,27 +4,16 @@ node_list = {"A": {"B":11,"C":15},"B":{"A":10,"Goal_B:5"}}
 import math
 from collections import defaultdict
 import heapq
-#from image_timer import color_matrix
+#from camera import color_matrix
+from create_test_image import test_matrix
 
-ROW = 30
-COL = 40
+ROW = 480
+COL = 640
+
+#ROW = 62
+#COL = 110
 
 distance_list = []
-class Graph:
-
-    def __init__(self):
-        self.graph = defaultdict(list)
-
-    def add_edge(self,u,v):
-        self.graph[u].append(v)
-
-
-class node:
-
-    def __init__(self,value,distance_from_robot=0,distance_from_closest_node=0):
-        self.value = value
-        self.distance_from_robot = distance_from_robot
-        self.distance_from_closest_node = distance_from_closest_node
 
 """
 
@@ -59,8 +48,8 @@ def get_h(ry, rx, by, bx):
 
 def trace_path(cell,dx,dy):
     path = []
-    row = dx
-    col = dy
+    row = dy
+    col = dx
 
     while not (cell[row][col].parent_row == row and cell[row][col].parent_col == col):
         path.append((row,col))
@@ -71,6 +60,10 @@ def trace_path(cell,dx,dy):
 
     path.append((row,col))
     path.reverse()
+
+    for i in path:
+        print("->", i, end=" ")
+    print()
 
 def is_valid(row,col):
     if (row >= 0) and (row < ROW) and (col >= 0) and (col < COL):
@@ -89,20 +82,26 @@ def get_heuristic()->float:
             max_d=d
     return max_d
 
+def is_unblocked(grid, row, col):
+    return grid[row][col] == '.'
+
 def A_star(color_matrix, src, dest):
 
-    if not is_valid(src[1],src[0]) and not is_valid(dest[1],dest[0]):
+    if not is_valid(src[0],src[1]) or not is_valid(dest[0],dest[1]):
         return "The specified rows and columns are not valid"
 
-    if set_destination(src[1],src[0],dest[1],dest[0]):
+    if not is_unblocked(color_matrix, src[0], src[1]) or not is_unblocked(color_matrix, dest[0], dest[1]):
+        return "Source or destination is blocked"
+
+    if set_destination(src[0],src[1],dest[0],dest[1]):
         return "We are already there, bozo"
 
     closed_list = [[False for _ in range(COL)] for _ in range(ROW)]
     cell_details = [[test_Cell() for _ in range(COL)] for _ in range(ROW)]
 
 
-    row = src[1]
-    col = src[0]
+    row = src[0]
+    col = src[1]
     cell_details[row][col].f = 0
     cell_details[row][col].g = 0
     cell_details[row][col].h = 0
@@ -124,19 +123,20 @@ def A_star(color_matrix, src, dest):
 
         directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
         for dir in directions:
-            new_row = row + dir[1]
-            new_col = col + dir[0]
+            new_row = row + dir[0]
+            new_col = col + dir[1]
 
-            if is_valid(new_row,new_col) and not closed_list[new_row][new_col]:
-                if set_destination(new_row,new_col, dest[1], dest[0]):
+            if is_valid(new_row,new_col) and is_unblocked(color_matrix, new_row, new_col) and not closed_list[new_row][new_col]:
+                if set_destination(new_row, new_col, dest[0], dest[1]):
                     cell_details[new_row][new_col].parent_row = row
                     cell_details[new_row][new_col].parent_col = col
                     print("destination cell found")
                     trace_path(cell_details,dest[1],dest[0])
                     found_dest = True
+                    return "You reached the destination"
                 else:
-                    g_new = cell_details[row][col].g + 1.0
-                    h_new = get_h(new_row,new_col,dest[1],dest[0])
+                    g_new = cell_details[row][col].g + 1.4
+                    h_new = get_h(new_row,new_col,dest[0],dest[1])
                     f_new = g_new + h_new
 
                     if cell_details[new_row][new_col].f == float('inf') or cell_details[new_row][new_col].f > f_new:
@@ -172,5 +172,9 @@ def test():
     # Run the A* search algorithm
     A_star(grid, src, dest)
 
-test()
+def vision_test(matrix, src, dest):
+   return A_star(matrix, src, dest)
+
+
+#print(vision_test(test_matrix, [10,10], [17,10]))
 
