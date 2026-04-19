@@ -58,9 +58,11 @@ def trace_path(cell,dx,dy):
     path.append((row,col))
     path.reverse()
 
+
     for i in path:
         print("->", i, end=" ")
     print()
+    return path
 
 def is_valid(row,col):
     if (row >= 0) and (row < ROW) and (col >= 0) and (col < COL):
@@ -123,9 +125,10 @@ def A_star(color_matrix, src, dest):
                     cell_details[new_row][new_col].parent_row = row
                     cell_details[new_row][new_col].parent_col = col
                     print("destination cell found")
-                    trace_path(cell_details,dest[1],dest[0])
+                    path = trace_path(cell_details,dest[1],dest[0])
                     found_dest = True
-                    return "You reached the destination"
+                    print("You reached the destination")
+                    return path
                 else:
                     g_new = cell_details[row][col].g + 1.4
                     h_new = get_h(new_row,new_col,dest[0],dest[1])
