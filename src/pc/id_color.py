@@ -13,9 +13,10 @@ def ball_pos_approx(matrix, color):
 
     last_ball_pos = [(1, 0), (1, 1), (0, 1)]
 
+    # Find candidate last-pixels
     for i in color_list:
         checks = 0
-#
+
         for dir in last_ball_pos:
             new_row = i[0] + dir[0]
             new_col = i[1] + dir[1]
@@ -31,6 +32,7 @@ def ball_pos_approx(matrix, color):
 
     used = []
 
+    # Group nearby candidates transitively
     for i in candidate_list:
         if i in used:
             continue
@@ -38,11 +40,20 @@ def ball_pos_approx(matrix, color):
         same_ball = [i]
         used.append(i)
 
-        for j in candidate_list:
-            if j not in used:
-                if abs(i[0] - j[0]) <= 1 and abs(i[1] - j[1]) <= 1:
-                    same_ball.append(j)
-                    used.append(j)
+        changed = True
+        while changed:
+            changed = False
+
+            for j in candidate_list:
+                if j in used:
+                    continue
+
+                for k in same_ball:
+                    if abs(k[0] - j[0]) <= 1 and abs(k[1] - j[1]) <= 1:
+                        same_ball.append(j)
+                        used.append(j)
+                        changed = True
+                        break
 
         last_pixel = max(same_ball, key=lambda p: (p[0], p[1]))
         color_list_final.append(last_pixel)
