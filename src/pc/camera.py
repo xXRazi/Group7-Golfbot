@@ -2,9 +2,10 @@ import cv2 as cv
 import os
 import time
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx
+from id_color import ball_pos_approx, grapler_pos_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star
+
 
 allocatedTime = 1
 STARTTIME = 2
@@ -42,8 +43,10 @@ while camera.isOpened():
                 #test to show white_lists
                 white_list = ball_pos_approx(color_matrix, "W")
                 print(white_list[0])
-                A_star(color_matrix, white_list[0],white_list[-1])
-
+                robot_path = A_star(color_matrix, white_list[0],white_list[-1])
+                print(robot_path)
+                #grapler_point = grapler_pos_approx(color_matrix,"G")
+                #print(grapler_point)
 
 
     cv.imshow("camera", frame)
