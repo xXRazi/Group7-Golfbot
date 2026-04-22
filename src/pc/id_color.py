@@ -59,3 +59,32 @@ def ball_pos_approx(matrix, color):
         color_list_final.append(last_pixel)
 
     return color_list_final
+
+def grapler_pos_approx(matrix, color):
+    row = len(matrix)
+    col = len(matrix[0])
+
+    color_list = []
+
+    for i in range(row):
+        for j in range(col):
+            if matrix[i][j] == color:
+                color_list.append((i, j))
+
+
+    Grapler_one_list = []
+    Grapler_two_list = []
+
+    for i in color_list:
+        if abs(color_list[0][0] - i[0]) <= 10 and abs(color_list[0][1] - i[1]) <= 10:
+            Grapler_one_list.append(i)
+        else:
+            Grapler_two_list.append(i)
+
+    Grapler_one_average = sum(Grapler_one_list) / len(Grapler_one_list)
+    Grapler_two_average = sum(Grapler_two_list) / len(Grapler_two_list)
+
+    Grapler_midpoint = ((Grapler_one_average[0]+Grapler_two_average[0])/2 , (Grapler_one_average[1]+Grapler_two_average[1])/2)
+
+    return Grapler_midpoint
+
