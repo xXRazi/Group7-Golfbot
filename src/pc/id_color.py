@@ -71,6 +71,8 @@ def grapler_pos_approx(matrix, color):
             if matrix[i][j] == color:
                 color_list.append((i, j))
 
+    if len(color_list) == 0:
+        return None
 
     Grapler_one_list = []
     Grapler_two_list = []
@@ -81,10 +83,22 @@ def grapler_pos_approx(matrix, color):
         else:
             Grapler_two_list.append(i)
 
-    Grapler_one_average = (sum(Grapler_one_list[0]) / len(Grapler_one_list), sum(Grapler_one_list[1]) / len(Grapler_one_list))
-    Grapler_two_average = (sum(Grapler_two_list[0]) / len(Grapler_two_list), sum(Grapler_two_list[1]) / len(Grapler_one_list))
+    if len(Grapler_one_list) == 0 or len(Grapler_two_list) == 0:
+        return None
 
-    Grapler_midpoint = ((Grapler_one_average[0]+Grapler_two_average[0])/2 , (Grapler_one_average[1]+Grapler_two_average[1])/2)
+    Grapler_one_average = (
+        sum(p[0] for p in Grapler_one_list) / len(Grapler_one_list),
+        sum(p[1] for p in Grapler_one_list) / len(Grapler_one_list)
+    )
+
+    Grapler_two_average = (
+        sum(p[0] for p in Grapler_two_list) / len(Grapler_two_list),
+        sum(p[1] for p in Grapler_two_list) / len(Grapler_two_list)
+    )
+
+    Grapler_midpoint = (
+        (Grapler_one_average[0] + Grapler_two_average[0]) / 2,
+        (Grapler_one_average[1] + Grapler_two_average[1]) / 2
+    )
 
     return Grapler_midpoint
-
