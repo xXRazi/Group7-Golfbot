@@ -44,7 +44,7 @@ while camera.isOpened():
                 white_list = ball_pos_approx(color_matrix, "W")
                 print(white_list[0])
                 robot_path = A_star(color_matrix, white_list[0],white_list[-1])
-                print(robot_path)
+                #print(robot_path)
                 grapler_point = grapler_pos_approx(color_matrix,"G")
                 print(grapler_point)
 
