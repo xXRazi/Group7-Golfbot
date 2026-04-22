@@ -60,7 +60,7 @@ def ball_pos_approx(matrix, color):
 
     return color_list_final
 
-def grapler_pos_approx(matrix, color):
+def grapler_pos_approx(matrix, color)->int:
     row = len(matrix)
     col = len(matrix[0])
 
@@ -97,8 +97,8 @@ def grapler_pos_approx(matrix, color):
     )
 
     Grapler_midpoint = (
-        (Grapler_one_average[0] + Grapler_two_average[0]) / 2,
-        (Grapler_one_average[1] + Grapler_two_average[1]) / 2
+        (Grapler_one_average[0] + Grapler_two_average[0]) // 2,
+        (Grapler_one_average[1] + Grapler_two_average[1]) // 2
     )
 
     return Grapler_midpoint
