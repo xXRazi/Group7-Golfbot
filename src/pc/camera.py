@@ -45,8 +45,8 @@ while camera.isOpened():
                 print(white_list[0])
                 robot_path = A_star(color_matrix, white_list[0],white_list[-1])
                 print(robot_path)
-                #grapler_point = grapler_pos_approx(color_matrix,"G")
-                #print(grapler_point)
+                grapler_point = grapler_pos_approx(color_matrix,"G")
+                print(grapler_point)
 
 
     cv.imshow("camera", frame)
