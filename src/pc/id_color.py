@@ -102,3 +102,50 @@ def grapler_pos_approx(matrix, color):
     )
 
     return Grapler_midpoint
+
+
+def goals_pos_approx(matrix, colorA, colorB):
+    row = len(matrix)
+    col = len(matrix[0])
+    color_list_A = []
+    color_list_B = []
+
+    for i in range(row):
+        for j in range(col):
+            if matrix[i][j] == colorA:
+                color_list_A.append((i, j))
+            if matrix[i][j] == colorB:
+                color_list_B.append((i, j))
+
+    if len(color_list_A) == 0 or len(color_list_B) == 0:
+        return None
+
+    GoalA_pos = (
+        sum(p[0] for p in color_list_A) // len(color_list_A),
+        sum(p[1] for p in color_list_A) // len(color_list_A)
+    )
+
+    GoalB_pos = (
+        sum(p[0] for p in color_list_B) // len(color_list_B),
+        sum(p[1] for p in color_list_B) // len(color_list_B)
+    )
+
+    return GoalA_pos, GoalB_pos
+
+def robot_pos(matrix):
+    row = len(matrix)
+    col = len(matrix[0])
+
+    robot_pos = []
+
+    for i in range(row):
+        for j in range(col):
+            if matrix[i][j] == "Y":
+                robot_pos.append((i, j))
+            if matrix[i][j] == "P":
+                robot_pos.append((i, j))
+            if matrix[i][j] == "B":
+                robot_pos.append((i, j))
+
+    return robot_pos
+
