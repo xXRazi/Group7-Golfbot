@@ -131,6 +131,11 @@ def goals_pos_approx(matrix, colorA, colorB):
     )
 
     return GoalA_pos, GoalB_pos
+    
+    """
+    Husk når du assigner skal du gøre det inorder 
+    A, B = goals_pos_approx()
+    """
 
 def robot_pos(matrix):
     row = len(matrix)
