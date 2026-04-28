@@ -15,7 +15,7 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("path")
 
-camera = cv.VideoCapture(1)
+camera = cv.VideoCapture(0)
 
 res, frame = camera.read()
 count = 0
@@ -38,16 +38,23 @@ while camera.isOpened():
                 #Directory skal være hvor du har projektet gemt
                 count += 1
                 print("Vi tager et billede")
+                #color_matrix = create_matrix(full_path)
+
+                t = time.time()
                 color_matrix = create_matrix(full_path)
+                print("create_matrix:", time.time() - t)
 
-                #test to show white_lists
+                t = time.time()
                 white_list = ball_pos_approx(color_matrix, "W")
-                print(white_list[0])
-                robot_path = A_star(color_matrix, white_list[0],white_list[-1])
-                #print(robot_path)
-                grapler_point = grapler_pos_approx(color_matrix,"G")
-                print(grapler_point)
+                print("ball_pos:", time.time() - t)
 
+                #t = time.time()
+                #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
+                #print("A_star:", time.time() - t)
+
+                t = time.time()
+                grapler_point = grapler_pos_approx(color_matrix, "G")
+                print("grapler:", time.time() - t)
 
     cv.imshow("camera", frame)
 

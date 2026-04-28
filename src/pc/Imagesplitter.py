@@ -61,7 +61,7 @@ def create_matrix(img_):
 
         # --- 4. Print the Resulting Matrix ---
     print(f"Matrix Size: {nH} rows x {nW} columns\n")
-    for row in col_matrix:
-        print(" ".join(row))
+    #for row in col_matrix:
+     #   print(" ".join(row))
     return col_matrix
 
