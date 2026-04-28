@@ -39,6 +39,13 @@ class test_Cell:
 def destination(row, col, dest_y,dest_x):
     return col == dest_x and row == dest_y
 
+def get_h_list(ry, rx, by, bx):
+    dist_list = []
+    distance:int = ((rx-bx)**2 + (ry-by)**2)**0.5
+    dist_list.append(distance)
+    return dist_list
+
+
 def get_h(ry, rx, by, bx):
     distance:int = ((rx-bx)**2 + (ry-by)**2)**0.5
     return distance
