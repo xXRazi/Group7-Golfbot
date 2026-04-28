@@ -95,3 +95,4 @@ def create_matrix(img_):
 
     print(f"Matrix Size: {H} rows x {W} columns\n")
     return col_matrix
+
