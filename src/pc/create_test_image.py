@@ -1,5 +1,10 @@
 from Imagesplitter import create_matrix
+from dotenv import load_dotenv
+import os
 
-path = "C:/Users/ronik/Desktop/ComputerEngineering/4_Semester/CDIO_project/Img_CDIO/0.png"
+load_dotenv()
+img_path = os.getenv("img_path")
 
-test_matrix = create_matrix(path)
+test_path = img_path + "/0.png"
+
+test_matrix = create_matrix(test_path)
