@@ -4,7 +4,7 @@ import time
 from Imagesplitter import create_matrix
 from id_color import ball_pos_approx, grapler_pos_approx
 from dotenv import load_dotenv
-from collection_algorithm import A_star
+from collection_algorithm import A_star, get_h_list
 
 
 allocatedTime = 1
@@ -13,7 +13,7 @@ BeginTime = time.time()
 startTime = time.time()
 
 load_dotenv()
-path = os.getenv("path")
+path = os.getenv("img_path")
 
 camera = cv.VideoCapture(0)
 
@@ -48,13 +48,17 @@ while camera.isOpened():
                 white_list = ball_pos_approx(color_matrix, "W")
                 print("ball_pos:", time.time() - t)
 
-                #t = time.time()
-                #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
-                #print("A_star:", time.time() - t)
-
+                
                 t = time.time()
                 grapler_point = grapler_pos_approx(color_matrix, "G")
                 print("grapler:", time.time() - t)
+
+                t = time.time()
+                for item in white_list:
+                    min_list = get_h_list(grapler_point[0][0],grapler_point[0][1],item[0],item[1])
+                min_list.sort()
+                robot_path = A_star(color_matrix, grapler_point, min_list[0])
+                print("A_star:", time.time() - t)
 
     cv.imshow("camera", frame)
 
