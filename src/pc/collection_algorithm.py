@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 import heapq
 #from camera import color_matrix
-from create_test_image import test_matrix
+#from create_test_image import test_matrix
 
 ROW = 480
 COL = 640
