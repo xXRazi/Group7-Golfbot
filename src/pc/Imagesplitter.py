@@ -6,7 +6,9 @@ import cv2 as cv
 def create_matrix(img_):
     img = io.imread(img_)
 
-    arr = np.stack([img])
+    hsv_img = cv.cvtColor(img, cv.COLOR_RGB2HSV)
+
+    arr = np.stack([hsv_img])
 
     block_h = 1
     block_w = 1
@@ -46,10 +48,10 @@ def create_matrix(img_):
         row = i // nW
         col = i % nW
 
-        hsv_block = cv.cvtColor(block, cv.COLOR_RGB2HSV)
+        #hsv_block = cv.cvtColor(block, cv.COLOR_RGB2HSV)
 
         for label, (lower, upper) in col_dict.items():
-            mask = cv.inRange(hsv_block, lower, upper)
+            mask = cv.inRange(block, lower, upper)
             if cv.countNonZero(mask) > 0:
                 col_matrix[row][col] = label
                 break
@@ -58,7 +60,7 @@ def create_matrix(img_):
 
         # --- 4. Print the Resulting Matrix ---
     print(f"Matrix Size: {nH} rows x {nW} columns\n")
-    #for row in col_matrix:
-     #   print(" ".join(row))
+    for row in col_matrix:
+        print(" ".join(row))
     return col_matrix
 
