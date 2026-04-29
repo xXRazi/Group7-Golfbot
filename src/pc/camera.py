@@ -55,10 +55,10 @@ while camera.isOpened():
 
                 t = time.time()
                 for item in white_list:
-                    min_list = get_h_list(grapler_point[0][0],grapler_point[0][1],item[0],item[1])
+                    min_list = get_h_list(grapler_point[0],grapler_point[1],item[0],item[1])
                 min_list.sort()
-                robot_path = A_star(color_matrix, grapler_point, min_list[0])
-                #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
+                #robot_path = A_star(color_matrix, grapler_point, min_list[0])
+                robot_path = A_star(color_matrix, white_list[0], white_list[-1])
                 print("A_star:", time.time() - t)
 
     cv.imshow("camera", frame)
