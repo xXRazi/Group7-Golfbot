@@ -1,6 +1,7 @@
 import cv2 as cv
 import os
 import time
+from create_test_image import test_matrix
 from Imagesplitter import create_matrix
 from id_color import ball_pos_approx, grapler_pos_approx
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("img_path")
 
-camera = cv.VideoCapture(1)
+camera = cv.VideoCapture(0)
 
 res, frame = camera.read()
 count = 0
@@ -34,7 +35,7 @@ while camera.isOpened():
             if res:
                 im_ = f"{count}.png"
                 full_path = os.path.join(path,im_)
-                cv.imwrite(full_path, frame)
+                #cv.imwrite(full_path, frame)
                 #Directory skal være hvor du har projektet gemt
                 count += 1
                 print("Vi tager et billede")
