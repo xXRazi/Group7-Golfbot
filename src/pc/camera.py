@@ -15,7 +15,7 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("img_path")
 
-camera = cv.VideoCapture(0)
+camera = cv.VideoCapture(1)
 
 res, frame = camera.read()
 count = 0
@@ -51,14 +51,21 @@ while camera.isOpened():
                 
                 t = time.time()
                 grapler_point = grapler_pos_approx(color_matrix, "G")
+                print(grapler_point)
                 print("grapler:", time.time() - t)
 
                 t = time.time()
+                min_list = []
                 for item in white_list:
-                    min_list = get_h_list(grapler_point[0],grapler_point[1],item[0],item[1])
-                min_list.sort()
-                #robot_path = A_star(color_matrix, grapler_point, min_list[0])
-                robot_path = A_star(color_matrix, white_list[0], white_list[-1])
+                    value = get_h_list(grapler_point[0],grapler_point[1],item[0],item[1])
+                    min_list.append(value)
+                print("minlist", min_list)
+                paired = list(zip(min_list, white_list))
+                paired.sort()  # sorts by min_list values
+                white_list = [item for _, item in paired]
+                print("white_list", white_list)
+                robot_path = A_star(color_matrix, grapler_point, white_list[0])
+                #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
                 print("A_star:", time.time() - t)
 
     cv.imshow("camera", frame)
