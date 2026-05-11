@@ -6,7 +6,7 @@ from command_handler import CommandHandler
 
 HOST = "0.0.0.0"
 PORT = 5000
-RECV_CHUNK_SIZE = 2048
+RECV_CHUNK_SIZE = 8192
 
 
 def loop(conn, command_handler, motor_controller):
@@ -26,11 +26,9 @@ def loop(conn, command_handler, motor_controller):
             expected_length = command_handler.get_expected_length(buffer)
 
             if expected_length is None:
-                # Need more bytes before we know how large the command is.
                 break
 
             if len(buffer) < expected_length:
-                # Full command has not arrived yet.
                 break
 
             command_bytes = bytes(buffer[:expected_length])
@@ -40,7 +38,9 @@ def loop(conn, command_handler, motor_controller):
                 motor_controller.stop()
                 return
 
-            print("Received raw bytes:", list(command_bytes))
+            print("Received raw bytes length:", len(command_bytes))
+            print("Received raw bytes preview:", list(command_bytes[:40]))
+
             conn.sendall(b"EV3 got command\n")
 
 
