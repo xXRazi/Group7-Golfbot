@@ -3,7 +3,7 @@ import os
 import time
 #from create_test_image import test_matrix
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx, grapler_pos_approx, robot_pos
+from id_color import ball_pos_approx, grapler_pos_approx, robot_pos, goals_pos_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star, get_h_list
 
@@ -16,7 +16,7 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("img_path")
 
-camera = cv.VideoCapture(1)
+camera = cv.VideoCapture(0)
 
 res, frame = camera.read()
 count = 0
@@ -71,6 +71,10 @@ while camera.isOpened():
 
                 robot_position= robot_pos(color_matrix)
                 #print("robot_position", robot_position)
+
+                Goal_A, Goal_B = goals_pos_approx(color_matrix, "PK", "C")
+                print("Goal_A:", Goal_A)
+                print("Goal_B:", Goal_B)
 
     cv.imshow("camera", frame)
 

@@ -19,11 +19,12 @@ def create_matrix(img_):
         "O": (np.array([25, 100, 100]), np.array([25, 255, 255])),
         "B": (np.array([0, 0, 0]), np.array([180, 255, 50])),
         "G": (np.array([40, 50, 50]), np.array([80, 255, 255])),
-        "P": (np.array([160, 50, 150]), np.array([180,150,255])),
         "b": (np.array([85,100,100]), np.array([105,255,255])),
         "_": (np.array([115, 120, 120]), np.array([175, 200, 215])),
-        "Y": (np.array([20, 80, 180]), np.array([35, 255, 255])),
-        "P": (np.array([155, 80, 120]), np.array([175, 255, 255]))
+        "Y": (np.array([23, 170, 220]), np.array([33, 255, 255])),
+        "P": (np.array([155, 130, 200]), np.array([168, 255, 255])),
+        "PK": (np.array([170, 45, 235]), np.array([180, 80, 255])),
+        "C": (np.array([88, 45, 220]), np.array([102, 90, 255]))
     }
 
     for label, (lower, upper) in col_dict.items():
