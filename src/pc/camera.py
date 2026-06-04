@@ -1,9 +1,9 @@
 import cv2 as cv
 import os
 import time
-from create_test_image import test_matrix
+#from create_test_image import test_matrix
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx, grapler_pos_approx
+from id_color import ball_pos_approx, grapler_pos_approx, robot_pos
 from dotenv import load_dotenv
 from collection_algorithm import A_star, get_h_list
 
@@ -16,7 +16,7 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("img_path")
 
-camera = cv.VideoCapture(0)
+camera = cv.VideoCapture(1)
 
 res, frame = camera.read()
 count = 0
@@ -35,7 +35,7 @@ while camera.isOpened():
             if res:
                 im_ = f"{count}.png"
                 full_path = os.path.join(path,im_)
-                #cv.imwrite(full_path, frame)
+                cv.imwrite(full_path, frame)
                 #Directory skal være hvor du har projektet gemt
                 count += 1
                 print("Vi tager et billede")
@@ -68,6 +68,9 @@ while camera.isOpened():
                 robot_path = A_star(color_matrix, grapler_point, white_list[0])
                 #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
                 print("A_star:", time.time() - t)
+
+                robot_position= robot_pos(color_matrix)
+                #print("robot_position", robot_position)
 
     cv.imshow("camera", frame)
 
