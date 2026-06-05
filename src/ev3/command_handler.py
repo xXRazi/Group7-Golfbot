@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import struct
 
 ERROR = 0x0
 CALIBRATE = 0x1
@@ -10,37 +11,63 @@ TURN = 0xD
 SETSPEED = 0xE
 FINISH = 0xF
 
-ERROR_LENGTH = 1          # [CMD]
-CALIBRATE_LENGTH = 3      # [CMD][LEFT_TRIM][RIGHT_TRIM]
-HANDSHAKE_LENGTH = 1      # [CMD]
-GOTO_LENGTH = 3           # [CMD][X][Y]
-POSSYNC_LENGTH = 3        # [CMD][X][Y]
-TURN_LENGTH = 3           # [CMD][ANGLE][SPEED]
-SETSPEED_LENGTH = 3       # [CMD][LEFT][RIGHT]
-FINISH_LENGTH = 1         # [CMD]
+# Packet formats:
+#
+# ERROR:     [CMD]
+# CALIBRATE: [CMD][LEFT_TRIM:int8][RIGHT_TRIM:int8]
+# SENDMAP:   [CMD][ROWS:uint16][COLS:uint16][MAP_BYTES...]
+# HANDSHAKE: [CMD]
+# GOTO:      [CMD][X:int32][Y:int32]
+# POSSYNC:   [CMD][X:int32][Y:int32]
+# TURN:      [CMD][ANGLE:int16][SPEED:int8]
+# SETSPEED:  [CMD][LEFT:int8][RIGHT:int8]
+# FINISH:    [CMD]
+
+ERROR_LENGTH = 1
+CALIBRATE_LENGTH = 3
+SENDMAP_HEADER_LENGTH = 5
+HANDSHAKE_LENGTH = 1
+GOTO_LENGTH = 9
+POSSYNC_LENGTH = 11
+TURN_LENGTH = 4
+SETSPEED_LENGTH = 3
+FINISH_LENGTH = 1
 
 
 def byte_to_signed(value):
-    """Convert one unsigned byte (0-255) to signed (-128 to 127)."""
+    """Convert one unsigned byte 0..255 to signed -128..127."""
     if value > 127:
         return value - 256
     return value
 
 
+def read_int32(data, offset):
+    return struct.unpack(">i", data[offset:offset + 4])[0]
+
+
+def read_int16(data, offset):
+    return struct.unpack(">h", data[offset:offset + 2])[0]
+
+
+def read_uint16(data, offset):
+    return struct.unpack(">H", data[offset:offset + 2])[0]
+
+
 def sendmap_length(data):
     """
     SENDMAP format:
-    [CMD][ROWS][COLS][MAP...]
-    Total length = 3 + rows * cols
+    [CMD][ROWS:uint16][COLS:uint16][MAP...]
+
+    Total length = 5 + rows * cols.
 
     Returns None until enough header bytes are present to know the full size.
     """
-    if len(data) < 3:
+    if len(data) < SENDMAP_HEADER_LENGTH:
         return None
 
-    rows = data[1]
-    cols = data[2]
-    return 3 + (rows * cols)
+    rows = read_uint16(data, 1)
+    cols = read_uint16(data, 3)
+    return SENDMAP_HEADER_LENGTH + (rows * cols)
 
 
 class Command:
@@ -77,7 +104,6 @@ class CommandHandler:
     def __init__(self, motor_controller):
         self.motor_controller = motor_controller
 
-        # Holds the latest map received
         self.map = {
             "rows": 0,
             "cols": 0,
@@ -97,13 +123,6 @@ class CommandHandler:
         }
 
     def get_expected_length(self, data):
-        """
-        Determine how many bytes are needed for the next command in the buffer.
-
-        Returns:
-            int  -> full command length is known
-            None -> need more bytes before the length can be determined
-        """
         if not data:
             return None
 
@@ -111,7 +130,6 @@ class CommandHandler:
         command = self.commands.get(cmd_code)
 
         if command is None:
-            # One byte is enough to know it's invalid.
             return 1
 
         return command.get_expected_length(data)
@@ -120,20 +138,22 @@ class CommandHandler:
         print("HANDSHAKE")
 
     def goto(self, data):
-        x = data[1]
-        y = data[2]
+        x = read_int32(data, 1)
+        y = read_int32(data, 5)
         print("GO TO({}, {})".format(x, y))
         self.motor_controller.goto(x, y)
 
     def position_sync(self, data):
-        x = data[1]
-        y = data[2]
-        print("POSITION SYNCHRONIZATION to ({}, {})".format(x, y))
+        x = read_int32(data, 1)
+        y = read_int32(data, 5)
+        heading = read_int16(data, 9) / 10.0      # tenths → degrees
+        print("POSITION SYNCHRONIZATION to ({}, {}), heading={:.1f}".format(x, y, heading))
         self.motor_controller.set_position(x, y)
+        self.motor_controller.set_heading(heading) # already exists in motor_control.py
 
     def turn(self, data):
-        angle = byte_to_signed(data[1])
-        speed = byte_to_signed(data[2])
+        angle = read_int16(data, 1)
+        speed = byte_to_signed(data[3])
         self.motor_controller.turn(angle, speed)
 
     def set_speed(self, data):
@@ -151,9 +171,11 @@ class CommandHandler:
         self.motor_controller.calibrate(left_trim, right_trim)
 
     def sendmap_command(self, data):
-        rows = data[1]
-        cols = data[2]
-        raw_cells = list(data[3:3 + rows * cols])
+        rows = read_uint16(data, 1)
+        cols = read_uint16(data, 3)
+
+        expected_cells = rows * cols
+        raw_cells = list(data[SENDMAP_HEADER_LENGTH:SENDMAP_HEADER_LENGTH + expected_cells])
 
         cells_2d = []
         for r in range(rows):
@@ -167,8 +189,7 @@ class CommandHandler:
             "cells": cells_2d,
         }
 
-        print("SENDMAP rows={}, cols={}".format(rows, cols))
-        print("MAP stored:", self.map)
+        print("SENDMAP rows={}, cols={}, cells={}".format(rows, cols, expected_cells))
 
     def finish_command(self, data):
         print("FINISH COMMAND")
@@ -182,7 +203,7 @@ class CommandHandler:
         command = self.commands.get(cmd_code)
 
         if command is None:
-            print("Invalid command received : 0x{:X}".format(cmd_code))
+            print("Invalid command received: 0x{:X}".format(cmd_code))
             self.motor_controller.stop()
             return False
 
