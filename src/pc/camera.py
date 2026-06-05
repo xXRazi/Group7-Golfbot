@@ -79,6 +79,17 @@ def read_warped_frame(camera):
     return warp_frame(frame)
 
 
+def count_color(matrix, color):
+    count = 0
+
+    for row in matrix:
+        for value in row:
+            if value == color:
+                count += 1
+
+    return count
+
+
 def get_robot_pose_from_camera(camera):
     warped_frame = read_warped_frame(camera)
 
@@ -86,7 +97,17 @@ def get_robot_pose_from_camera(camera):
         return None
 
     cv.imwrite(SYNC_IMAGE_PATH, warped_frame)
+    print("Saved sync image:", SYNC_IMAGE_PATH)
+
     color_matrix = create_matrix(SYNC_IMAGE_PATH)
+
+    print(
+        "Robot marker counts: Y={}, P={}, B={}".format(
+            count_color(color_matrix, "Y"),
+            count_color(color_matrix, "P"),
+            count_color(color_matrix, "B"),
+        )
+    )
 
     return robot_pose_approx(color_matrix)
 
