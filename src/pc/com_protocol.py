@@ -68,8 +68,10 @@ def recv_response(sock):
         if not data:
             print("Robot closed the connection")
             return False
+
         print("Robot:", data.decode("utf-8", errors="replace").strip())
         return True
+
     except OSError as exc:
         print("Receive error:", exc)
         return False
@@ -80,6 +82,7 @@ def send_command(sock, packet):
         sock.sendall(packet)
         print("Sent:", packet_preview(packet))
         return recv_response(sock)
+
     except OSError as exc:
         print("Send error:", exc)
         return False
@@ -104,9 +107,12 @@ def build_goto(x, y):
     """
     GOTO packet:
     [CMD][X:int32][Y:int32]
+
+    Total length: 9 bytes.
     """
     x = validate_signed_int(x, "x")
     y = validate_signed_int(y, "y")
+
     return struct.pack(">Bii", GOTO, x, y)
 
 
@@ -115,11 +121,12 @@ def build_possync(x, y, heading_tenths):
     POSSYNC packet:
     [CMD][X:int32][Y:int32][HEADING:int16]
 
-    heading_tenths is heading in tenths of a degree (e.g. 1805 = 180.5°).
+    Total length: 11 bytes.
     """
     x = validate_signed_int(x, "x")
     y = validate_signed_int(y, "y")
     heading_tenths = validate_signed_short(heading_tenths, "heading_tenths")
+
     return struct.pack(">Biih", POSSYNC, x, y, heading_tenths)
 
 
@@ -128,13 +135,11 @@ def build_turn(angle, speed):
     TURN packet:
     [CMD][ANGLE:int16][SPEED:int8]
 
-    Angle is now int16, so commands like:
-      turn 180 50
-      turn -180 50
-    are supported.
+    Total length: 4 bytes.
     """
     angle = validate_signed_short(angle, "angle")
     speed = validate_signed_byte(speed, "speed")
+
     return struct.pack(">Bhb", TURN, angle, speed)
 
 
@@ -155,12 +160,13 @@ def build_sendmap(rows, cols, cells):
     [CMD][ROWS:uint16][COLS:uint16][MAP...]
 
     This supports a 480 x 640 map.
-    The cell values are still bytes 0..255.
+    The cell values are bytes 0..255.
     """
     rows = validate_unsigned_short(rows, "rows")
     cols = validate_unsigned_short(cols, "cols")
 
     expected = rows * cols
+
     if len(cells) != expected:
         raise ValueError(
             "sendmap needs exactly {} cell values for a {}x{} map".format(
@@ -169,12 +175,14 @@ def build_sendmap(rows, cols, cells):
         )
 
     validated_cells = [validate_unsigned_byte(cell, "cell") for cell in cells]
+
     return struct.pack(">BHH", SENDMAP, rows, cols) + bytes(validated_cells)
 
 
 def build_sendmap_fill(rows, cols, value):
     """
-    Convenience command for testing large maps without typing 307200 cells.
+    Convenience command for testing large maps without typing all cells.
+
     Example:
       sendmap_fill 480 640 0
     """
@@ -183,6 +191,7 @@ def build_sendmap_fill(rows, cols, value):
     value = validate_unsigned_byte(value, "value")
 
     cells = bytes([value]) * (rows * cols)
+
     return struct.pack(">BHH", SENDMAP, rows, cols) + cells
 
 
@@ -196,7 +205,8 @@ def print_help():
     print("  handshake")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  goto X Y")
-    print("  possync X Y HEADING_TENTHS  (e.g. possync 320 240 900 for 90.0°)")
+    print("  possync X Y")
+    print("  possync X Y HEADING_TENTHS  heading is accepted but ignored")
     print("  turn ANGLE SPEED")
     print("  setspeed LEFT RIGHT")
     print("  sendmap ROWS COLS CELL1 CELL2 ...")
@@ -206,13 +216,15 @@ def print_help():
     print("  quit")
     print()
     print("Notes:")
-    print("  goto/possync now use signed 32-bit integers")
-    print("  turn angle now uses signed 16-bit integer")
-    print("  turn speed still uses signed byte: -128..127")
-    print("  setspeed/calibrate still use signed bytes: -128..127")
-    print("  sendmap rows/cols now use unsigned 16-bit integers")
-    print("  sendmap cell values are still bytes: 0..255")
-    print("  map size 480x640 is now supported")
+    print("  goto uses signed 32-bit x/y")
+    print("  possync sends only x/y to match the current EV3 protocol")
+    print("  possync packet length is 9 bytes, not 11")
+    print("  heading is not sent unless the EV3 protocol is updated too")
+    print("  turn angle uses signed 16-bit integer")
+    print("  turn speed uses signed byte: -128..127")
+    print("  setspeed/calibrate use signed bytes: -128..127")
+    print("  sendmap rows/cols use unsigned 16-bit integers")
+    print("  sendmap cell values are bytes: 0..255")
     print()
 
 
@@ -241,59 +253,74 @@ def interactive_loop(sock, host, port):
                 if len(parts) != 3:
                     print("Usage: calibrate LEFT_TRIM RIGHT_TRIM")
                     continue
+
                 left_trim = int(parts[1])
                 right_trim = int(parts[2])
+
                 packet = build_calibrate(left_trim, right_trim)
 
             elif cmd == "goto":
                 if len(parts) != 3:
                     print("Usage: goto X Y")
                     continue
+
                 x = int(parts[1])
                 y = int(parts[2])
+
                 packet = build_goto(x, y)
 
             elif cmd == "possync":
-                if len(parts) != 4:
-                    print("Usage: possync X Y HEADING_TENTHS")
+                if len(parts) not in (3, 4):
+                    print("Usage: possync X Y")
+                    print("   or: possync X Y HEADING_TENTHS")
                     continue
+
                 x = int(parts[1])
                 y = int(parts[2])
-                heading_tenths = int(parts[3])
-                packet = build_possync(x, y, heading_tenths)
+
+                # Optional heading is accepted for convenience but ignored.
+                packet = build_possync(x, y)
 
             elif cmd == "turn":
                 if len(parts) != 3:
                     print("Usage: turn ANGLE SPEED")
                     continue
+
                 angle = int(parts[1])
                 speed = int(parts[2])
+
                 packet = build_turn(angle, speed)
 
             elif cmd == "setspeed":
                 if len(parts) != 3:
                     print("Usage: setspeed LEFT RIGHT")
                     continue
+
                 left = int(parts[1])
                 right = int(parts[2])
+
                 packet = build_setspeed(left, right)
 
             elif cmd == "sendmap":
                 if len(parts) < 4:
                     print("Usage: sendmap ROWS COLS CELL1 CELL2 ...")
                     continue
+
                 rows = int(parts[1])
                 cols = int(parts[2])
                 cells = [int(value) for value in parts[3:]]
+
                 packet = build_sendmap(rows, cols, cells)
 
             elif cmd == "sendmap_fill":
                 if len(parts) != 4:
                     print("Usage: sendmap_fill ROWS COLS VALUE")
                     continue
+
                 rows = int(parts[1])
                 cols = int(parts[2])
                 value = int(parts[3])
+
                 packet = build_sendmap_fill(rows, cols, value)
 
             elif cmd == "finish":
@@ -323,6 +350,7 @@ def main():
 
     if len(sys.argv) >= 2:
         host = sys.argv[1]
+
     if len(sys.argv) >= 3:
         port = int(sys.argv[2])
 
@@ -330,6 +358,7 @@ def main():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((host, port))
             interactive_loop(sock, host, port)
+
     except OSError as exc:
         print("Connection error:", exc)
 

@@ -5,7 +5,7 @@ import tempfile
 import time
 #from create_test_image import test_matrix
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx, grapler_pos_approx, robot_pos, goals_pos_approx, robot_pose_approx
+from id_color import ball_pos_approx_shape, grapler_pos_approx, robot_pos, goals_pos_approx, robot_pose_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star, get_h_list
 from com_protocol import HOST, PORT, send_command, build_handshake, build_goto, build_possync
@@ -17,37 +17,36 @@ import numpy as np
 # ==========================================
 
 # Define your desired final grid size (640 columns by 480 rows)
-width, height = 640, 480
+width, height = 640, 360
 
 # --- pts1: The Raw Camera Corners ---
 # You still MUST measure these from your raw camera feed!
 # I am using placeholder numbers here. If your physical arena isn't
 # a perfect rectangle in the camera's eye, these numbers will not form a perfect box.
+# order: top-left, top-right, bottom-right, bottom-left
 pts1 = np.float32([
-    [1, 0],      # Top-Left
-    [636, 1],    # Top-Right
-    [639, 476],  # Bottom-Left
-    [1, 478]     # Bottom-Right
+    [1, 0],       # top-left
+    [1916, 1],     # top-right
+    [1919, 1076],   # bottom-right
+    [1, 1078]      # bottom-left
 ])
 
-# --- pts2: The Flat 2D Destination Grid ---
-# This forces whatever is inside pts1 to stretch and pin to the exact
-# corners of a perfect 640x480 mathematical grid.
 pts2 = np.float32([
-    [0, 0],             # Top-Left pinned to 0,0
-    [width, 0],         # Top-Right pinned to 640,0
-    [0, height],        # Bottom-Left pinned to 0,480
-    [width, height]     # Bottom-Right pinned to 640,480
+    [0, 0],                 # top-left
+    [width - 1, 0],         # top-right
+    [width - 1, height - 1],# bottom-right
+    [0, height - 1]         # bottom-left
 ])
 
 # Compute the transformation matrix
 warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
 # ==========================================
 load_dotenv()
-path = os.getenv("img_path")
-CAMERA_INDEX = 1
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_DIR = os.path.join(BASE_DIR, "images")
+CAMERA_INDEX = 0
 SYNC_DELAY_SECONDS = 0.2
-SYNC_IMAGE_PATH = os.path.join(path, "robot_sync_frame.png")
+SYNC_IMAGE_PATH = os.path.join(IMAGE_DIR, "robot_sync_frame.png")
 
 
 def open_camera(camera_index=CAMERA_INDEX):
@@ -183,7 +182,7 @@ def run_autonomous_camera():
     startTime = time.time()
 
     load_dotenv()
-    path = os.getenv("img_path")
+    path = IMAGE_DIR
 
     camera = open_camera(CAMERA_INDEX)
     if camera is None:
@@ -230,7 +229,7 @@ def run_autonomous_camera():
                     print("create_matrix:", time.time() - t)
 
                     t = time.time()
-                    white_list = ball_pos_approx(color_matrix, "W")
+                    white_list = ball_pos_approx_shape(color_matrix, "W")
                     print("ball_pos:", time.time() - t)
 
                     t = time.time()
@@ -261,6 +260,9 @@ def run_autonomous_camera():
                     Goal_A, Goal_B = goals_pos_approx(color_matrix, "PK", "C")
                     print("Goal_A:", Goal_A)
                     print("Goal_B:", Goal_B)
+
+                    orangeball_pos = ball_pos_approx_shape(color_matrix, "O")
+                    print("orangeball_pos:", orangeball_pos)
 
             cv.imshow("camera", warped_frame)
 

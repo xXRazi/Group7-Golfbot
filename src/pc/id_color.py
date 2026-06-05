@@ -1,66 +1,76 @@
 import math
 
-def ball_pos_approx(matrix, color):
+def ball_pos_approx_shape(matrix, color):
     row = len(matrix)
     col = len(matrix[0])
 
-    color_list = []
-    candidate_list = []
-    color_list_final = []
+    visited = set()
+    balls = []
 
     for i in range(row):
         for j in range(col):
-            if matrix[i][j] == color:
-                color_list.append((i, j))
 
-    last_ball_pos = [(1, 0), (1, 1), (0, 1)]
+            if matrix[i][j] != color or (i, j) in visited:
+                continue
 
-    # Find candidate last-pixels
-    for i in color_list:
-        checks = 0
+            stack = [(i, j)]
+            blob = []
+            visited.add((i, j))
 
-        for dir in last_ball_pos:
-            new_row = i[0] + dir[0]
-            new_col = i[1] + dir[1]
+            while stack:
+                r, c = stack.pop()
+                blob.append((r, c))
 
-            if 0 <= new_row < row and 0 <= new_col < col:
-                if matrix[new_row][new_col] != color:
-                    checks += 1
-            else:
-                checks += 1
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1),
+                               (-1,-1), (-1,1), (1,-1), (1,1)]:
+                    nr = r + dr
+                    nc = c + dc
 
-        if checks == 3:
-            candidate_list.append(i)
+                    if 0 <= nr < row and 0 <= nc < col:
+                        if matrix[nr][nc] == color and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            stack.append((nr, nc))
 
-    used = []
+            area = len(blob)
 
-    # Group nearby candidates transitively
-    for i in candidate_list:
-        if i in used:
-            continue
+            rows = [p[0] for p in blob]
+            cols = [p[1] for p in blob]
 
-        same_ball = [i]
-        used.append(i)
+            min_r, max_r = min(rows), max(rows)
+            min_c, max_c = min(cols), max(cols)
 
-        changed = True
-        while changed:
-            changed = False
+            height = max_r - min_r + 1
+            width = max_c - min_c + 1
 
-            for j in candidate_list:
-                if j in used:
+            if height == 0 or width == 0:
+                continue
+
+            ratio = width / height
+            bbox_area = width * height
+            fill_ratio = area / bbox_area
+
+            if color == "O":
+                if not (20 < area < 250):
+                    continue
+                if not (0.7 < ratio < 1.3):
+                    continue
+                if not (0.45 < fill_ratio < 0.85):
                     continue
 
-                for k in same_ball:
-                    if abs(k[0] - j[0]) <= 8 and abs(k[1] - j[1]) <= 8:
-                        same_ball.append(j)
-                        used.append(j)
-                        changed = True
-                        break
+            elif color == "W":
+                if not (15 < area < 350):
+                    continue
+                if not (0.45 < ratio < 1.8):
+                    continue
+                if not (0.25 < fill_ratio < 0.95):
+                    continue
 
-        last_pixel = max(same_ball, key=lambda p: (p[0], p[1]))
-        color_list_final.append(last_pixel)
+            center_r = int(sum(rows) / area)
+            center_c = int(sum(cols) / area)
 
-    return color_list_final
+            balls.append((center_r, center_c))
+
+    return balls
 
 def grapler_pos_approx(matrix, color):
     row = len(matrix)

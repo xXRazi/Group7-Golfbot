@@ -15,7 +15,7 @@ class MotorController:
     # Use:
     #   x = column, valid range 0..639
     #   y = row,    valid range 0..479
-    MAP_ROWS = 480
+    MAP_ROWS = 360
     MAP_COLS = 640
 
     # Each map coordinate increment in centimeters.
@@ -27,10 +27,10 @@ class MotorController:
 
     # Turn calibration.
     # This is motor degrees per requested robot turn degree.
-    DEGREES_PER_TURN_DEGREE = 2.31
+    DEGREES_PER_TURN_DEGREE = 2.2
 
     # Wheel rotation per real-world cm.
-    DEGREES_PER_CM = 17.6
+    DEGREES_PER_CM = 25
 
     # Derived value:
     # motor degrees per one map coordinate increment.
