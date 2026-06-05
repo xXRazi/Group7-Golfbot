@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import socket
+import struct
 import sys
 
 
@@ -18,16 +19,47 @@ FINISH = 0xF
 
 
 def encode_signed_byte(value):
-    """Convert signed int (-128..127) to one byte (0..255)."""
+    """Convert signed int -128..127 to one byte 0..255."""
     if not (-128 <= value <= 127):
         raise ValueError("value must be between -128 and 127")
     return value % 256
+
+
+def validate_signed_byte(value, name):
+    if not (-128 <= value <= 127):
+        raise ValueError("{} must be between -128 and 127".format(name))
+    return value
+
+
+def validate_signed_short(value, name):
+    if not (-32768 <= value <= 32767):
+        raise ValueError("{} must be between -32768 and 32767".format(name))
+    return value
+
+
+def validate_signed_int(value, name):
+    if not (-2147483648 <= value <= 2147483647):
+        raise ValueError("{} must be between -2147483648 and 2147483647".format(name))
+    return value
+
+
+def validate_unsigned_short(value, name):
+    if not (0 <= value <= 65535):
+        raise ValueError("{} must be between 0 and 65535".format(name))
+    return value
 
 
 def validate_unsigned_byte(value, name):
     if not (0 <= value <= 255):
         raise ValueError("{} must be between 0 and 255".format(name))
     return value
+
+
+def packet_preview(packet, max_bytes=40):
+    preview = list(packet[:max_bytes])
+    if len(packet) > max_bytes:
+        return "{} ... total {} bytes".format(preview, len(packet))
+    return "{} total {} bytes".format(preview, len(packet))
 
 
 def recv_response(sock):
@@ -46,7 +78,7 @@ def recv_response(sock):
 def send_command(sock, packet):
     try:
         sock.sendall(packet)
-        print("Sent bytes:", list(packet))
+        print("Sent:", packet_preview(packet))
         return recv_response(sock)
     except OSError as exc:
         print("Send error:", exc)
@@ -58,6 +90,9 @@ def build_handshake():
 
 
 def build_calibrate(left_trim, right_trim):
+    left_trim = validate_signed_byte(left_trim, "left_trim")
+    right_trim = validate_signed_byte(right_trim, "right_trim")
+
     return bytes([
         CALIBRATE,
         encode_signed_byte(left_trim),
@@ -66,30 +101,47 @@ def build_calibrate(left_trim, right_trim):
 
 
 def build_goto(x, y):
-    x = validate_unsigned_byte(x, "x")
-    y = validate_unsigned_byte(y, "y")
-    return bytes([GOTO, x, y])
+    """
+    GOTO packet:
+    [CMD][X:int32][Y:int32]
+    """
+    x = validate_signed_int(x, "x")
+    y = validate_signed_int(y, "y")
+    return struct.pack(">Bii", GOTO, x, y)
 
 
-def build_possync(x, y):
+def build_possync(x, y, heading_tenths):
     """
-    Matches the current robot code:
-    POSSYNC = [CMD][X][Y]
+    POSSYNC packet:
+    [CMD][X:int32][Y:int32][HEADING:int16]
+
+    heading_tenths is heading in tenths of a degree (e.g. 1805 = 180.5°).
     """
-    x = validate_unsigned_byte(x, "x")
-    y = validate_unsigned_byte(y, "y")
-    return bytes([POSSYNC, x, y])
+    x = validate_signed_int(x, "x")
+    y = validate_signed_int(y, "y")
+    heading_tenths = validate_signed_short(heading_tenths, "heading_tenths")
+    return struct.pack(">Biih", POSSYNC, x, y, heading_tenths)
 
 
 def build_turn(angle, speed):
-    return bytes([
-        TURN,
-        encode_signed_byte(angle),
-        encode_signed_byte(speed),
-    ])
+    """
+    TURN packet:
+    [CMD][ANGLE:int16][SPEED:int8]
+
+    Angle is now int16, so commands like:
+      turn 180 50
+      turn -180 50
+    are supported.
+    """
+    angle = validate_signed_short(angle, "angle")
+    speed = validate_signed_byte(speed, "speed")
+    return struct.pack(">Bhb", TURN, angle, speed)
 
 
 def build_setspeed(left, right):
+    left = validate_signed_byte(left, "left")
+    right = validate_signed_byte(right, "right")
+
     return bytes([
         SETSPEED,
         encode_signed_byte(left),
@@ -98,8 +150,15 @@ def build_setspeed(left, right):
 
 
 def build_sendmap(rows, cols, cells):
-    rows = validate_unsigned_byte(rows, "rows")
-    cols = validate_unsigned_byte(cols, "cols")
+    """
+    SENDMAP packet:
+    [CMD][ROWS:uint16][COLS:uint16][MAP...]
+
+    This supports a 480 x 640 map.
+    The cell values are still bytes 0..255.
+    """
+    rows = validate_unsigned_short(rows, "rows")
+    cols = validate_unsigned_short(cols, "cols")
 
     expected = rows * cols
     if len(cells) != expected:
@@ -110,7 +169,21 @@ def build_sendmap(rows, cols, cells):
         )
 
     validated_cells = [validate_unsigned_byte(cell, "cell") for cell in cells]
-    return bytes([SENDMAP, rows, cols] + validated_cells)
+    return struct.pack(">BHH", SENDMAP, rows, cols) + bytes(validated_cells)
+
+
+def build_sendmap_fill(rows, cols, value):
+    """
+    Convenience command for testing large maps without typing 307200 cells.
+    Example:
+      sendmap_fill 480 640 0
+    """
+    rows = validate_unsigned_short(rows, "rows")
+    cols = validate_unsigned_short(cols, "cols")
+    value = validate_unsigned_byte(value, "value")
+
+    cells = bytes([value]) * (rows * cols)
+    return struct.pack(">BHH", SENDMAP, rows, cols) + cells
 
 
 def build_finish():
@@ -123,18 +196,23 @@ def print_help():
     print("  handshake")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  goto X Y")
-    print("  possync X Y")
+    print("  possync X Y HEADING_TENTHS  (e.g. possync 320 240 900 for 90.0°)")
     print("  turn ANGLE SPEED")
     print("  setspeed LEFT RIGHT")
     print("  sendmap ROWS COLS CELL1 CELL2 ...")
+    print("  sendmap_fill ROWS COLS VALUE")
     print("  finish")
     print("  help")
     print("  quit")
     print()
     print("Notes:")
-    print("  calibrate/turn/setspeed use signed values: -128..127")
-    print("  goto/possync use unsigned values: 0..255")
-    print("  sendmap needs exactly ROWS*COLS cell values")
+    print("  goto/possync now use signed 32-bit integers")
+    print("  turn angle now uses signed 16-bit integer")
+    print("  turn speed still uses signed byte: -128..127")
+    print("  setspeed/calibrate still use signed bytes: -128..127")
+    print("  sendmap rows/cols now use unsigned 16-bit integers")
+    print("  sendmap cell values are still bytes: 0..255")
+    print("  map size 480x640 is now supported")
     print()
 
 
@@ -176,12 +254,13 @@ def interactive_loop(sock, host, port):
                 packet = build_goto(x, y)
 
             elif cmd == "possync":
-                if len(parts) != 3:
-                    print("Usage: possync X Y")
+                if len(parts) != 4:
+                    print("Usage: possync X Y HEADING_TENTHS")
                     continue
                 x = int(parts[1])
                 y = int(parts[2])
-                packet = build_possync(x, y)
+                heading_tenths = int(parts[3])
+                packet = build_possync(x, y, heading_tenths)
 
             elif cmd == "turn":
                 if len(parts) != 3:
@@ -207,6 +286,15 @@ def interactive_loop(sock, host, port):
                 cols = int(parts[2])
                 cells = [int(value) for value in parts[3:]]
                 packet = build_sendmap(rows, cols, cells)
+
+            elif cmd == "sendmap_fill":
+                if len(parts) != 4:
+                    print("Usage: sendmap_fill ROWS COLS VALUE")
+                    continue
+                rows = int(parts[1])
+                cols = int(parts[2])
+                value = int(parts[3])
+                packet = build_sendmap_fill(rows, cols, value)
 
             elif cmd == "finish":
                 packet = build_finish()
