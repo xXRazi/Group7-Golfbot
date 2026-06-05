@@ -26,8 +26,8 @@ width, height = 640, 480
 pts1 = np.float32([
     [1, 0],      # Top-Left
     [636, 1],    # Top-Right
-    [1, 478],    # Bottom-Left
-    [639, 476]   # Bottom-Right
+    [639, 476],  # Bottom-Left
+    [1, 478]     # Bottom-Right
 ])
 
 # --- pts2: The Flat 2D Destination Grid ---
@@ -43,13 +43,17 @@ pts2 = np.float32([
 # Compute the transformation matrix
 warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
 # ==========================================
-
-CAMERA_INDEX = 0
+load_dotenv()
+path = os.getenv("img_path")
+CAMERA_INDEX = 1
 SYNC_DELAY_SECONDS = 0.2
-SYNC_IMAGE_PATH = os.path.join(tempfile.gettempdir(), "robot_sync_frame.png")
+SYNC_IMAGE_PATH = os.path.join(path, "robot_sync_frame.png")
 
 
 def open_camera(camera_index=CAMERA_INDEX):
+    print("using camera.py from : ", __file__)
+    print("Trying to open camera : ", camera_index)
+
     camera = cv.VideoCapture(camera_index)
 
     if not camera.isOpened():
