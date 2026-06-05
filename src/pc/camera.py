@@ -26,8 +26,8 @@ width, height = 640, 480
 pts1 = np.float32([
     [1, 0],      # Top-Left
     [636, 1],    # Top-Right
-    [639, 476],  # Bottom-Left
-    [1, 478]     # Bottom-Right
+    [1, 478],    # Bottom-Left
+    [639, 476]   # Bottom-Right
 ])
 
 # --- pts2: The Flat 2D Destination Grid ---
@@ -44,7 +44,7 @@ pts2 = np.float32([
 warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
 # ==========================================
 
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 SYNC_DELAY_SECONDS = 0.2
 SYNC_IMAGE_PATH = os.path.join(tempfile.gettempdir(), "robot_sync_frame.png")
 
