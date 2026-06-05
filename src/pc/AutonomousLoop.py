@@ -59,14 +59,14 @@ while camera.isOpened():
 
                 if len(orangeball_pos) != 0:
                     robot_path = A_star(color_matrix, grapler_point, orangeball_pos)
-                    for item in robot_path:
+                    #for item in robot_path:
                         #goto item
 
                     #close grapler
 
                     robot_path = A_star(color_matrix, grapler_point, Goal_A)
 
-                    for item in robot_path:
+                    #for item in robot_path:
                         #goto item
 
                     #open grapler
@@ -74,7 +74,7 @@ while camera.isOpened():
                     #shoot command
                 else:
                     robot_path = A_star(color_matrix, grapler_point, white_list[0])
-                    for item in robot_path:
+                    #for item in robot_path:
                         # goto item
 
                     #close grapler
