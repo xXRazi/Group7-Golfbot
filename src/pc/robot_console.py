@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-import cv2 as cv
-import os
 import socket
 import sys
-import tempfile
 import time
 
-import numpy as np
-
-from Imagesplitter import create_matrix
-from id_color import robot_pose_approx
+from camera import (
+    CAMERA_INDEX,
+    SYNC_DELAY_SECONDS,
+    close_camera,
+    get_robot_pose_from_camera,
+    open_camera,
+    show_camera_once,
+)
 from com_protocol import (
     HOST,
     PORT,
@@ -22,50 +23,6 @@ from com_protocol import (
     build_turn,
     send_command,
 )
-
-
-# ==========================================
-# PERSPECTIVE WARP SETUP
-# Keep these values the same as camera.py.
-# ==========================================
-
-width, height = 640, 480
-
-pts1 = np.float32([
-    [1, 0],      # Top-Left
-    [636, 1],    # Top-Right
-    [639, 476],  # Bottom-Left
-    [1, 478]     # Bottom-Right
-])
-
-pts2 = np.float32([
-    [0, 0],
-    [width, 0],
-    [0, height],
-    [width, height]
-])
-
-warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
-
-# ==========================================
-
-CAMERA_INDEX = 1
-SYNC_DELAY_SECONDS = 0.2
-SYNC_IMAGE_PATH = os.path.join(tempfile.gettempdir(), "robot_sync_frame.png")
-
-
-def get_robot_pose_from_camera(camera):
-    res, frame = camera.read()
-
-    if not res:
-        print("Could not read camera frame")
-        return None
-
-    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
-    cv.imwrite(SYNC_IMAGE_PATH, warped_frame)
-
-    color_matrix = create_matrix(SYNC_IMAGE_PATH)
-    return robot_pose_approx(color_matrix)
 
 
 def sync_robot_from_camera(sock, camera):
@@ -100,18 +57,6 @@ def goto_xy_then_sync(sock, camera, x, y):
     return sync_robot_from_camera(sock, camera)
 
 
-def show_camera_once(camera):
-    res, frame = camera.read()
-
-    if not res:
-        print("Could not read camera frame")
-        return
-
-    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
-    cv.imshow("camera", warped_frame)
-    cv.waitKey(1)
-
-
 def print_help():
     print()
     print("Commands:")
@@ -131,7 +76,7 @@ def print_help():
     print()
     print("Notes:")
     print("  goto uses EV3 coordinates directly: x = column, y = row")
-    print("  after each goto, this program captures a warped camera frame and sends POSSYNC")
+    print("  after each goto, this program asks camera.py for the camera pose and sends POSSYNC")
     print()
 
 
@@ -254,6 +199,7 @@ def interactive_loop(sock, camera):
 def main():
     host = HOST
     port = PORT
+    camera_index = CAMERA_INDEX
 
     if len(sys.argv) >= 2:
         host = sys.argv[1]
@@ -261,10 +207,12 @@ def main():
     if len(sys.argv) >= 3:
         port = int(sys.argv[2])
 
-    camera = cv.VideoCapture(CAMERA_INDEX)
+    if len(sys.argv) >= 4:
+        camera_index = int(sys.argv[3])
 
-    if not camera.isOpened():
-        print("Could not open camera index {}".format(CAMERA_INDEX))
+    camera = open_camera(camera_index)
+
+    if camera is None:
         return
 
     try:
@@ -282,8 +230,7 @@ def main():
         print("Connection error:", exc)
 
     finally:
-        camera.release()
-        cv.destroyAllWindows()
+        close_camera(camera)
 
 
 if __name__ == "__main__":

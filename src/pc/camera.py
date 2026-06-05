@@ -17,21 +17,21 @@ import numpy as np
 # ==========================================
 
 # Define your desired final grid size (640 columns by 480 rows)
-width, height = 640, 480 
+width, height = 640, 480
 
 # --- pts1: The Raw Camera Corners ---
-# You still MUST measure these from your raw camera feed! 
-# I am using placeholder numbers here. If your physical arena isn't 
+# You still MUST measure these from your raw camera feed!
+# I am using placeholder numbers here. If your physical arena isn't
 # a perfect rectangle in the camera's eye, these numbers will not form a perfect box.
 pts1 = np.float32([
-    [1, 0],   # Top-Left 
-    [636, 1],   # Top-Right 
-    [639, 476],   # Bottom-Left 
-    [1, 478]   # Bottom-Right 
-]) 
+    [1, 0],      # Top-Left
+    [636, 1],    # Top-Right
+    [639, 476],  # Bottom-Left
+    [1, 478]     # Bottom-Right
+])
 
 # --- pts2: The Flat 2D Destination Grid ---
-# This forces whatever is inside pts1 to stretch and pin to the exact 
+# This forces whatever is inside pts1 to stretch and pin to the exact
 # corners of a perfect 640x480 mathematical grid.
 pts2 = np.float32([
     [0, 0],             # Top-Left pinned to 0,0
@@ -44,28 +44,61 @@ pts2 = np.float32([
 warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
 # ==========================================
 
-allocatedTime = 1
-STARTTIME = 2
-BeginTime = time.time()
-startTime = time.time()
-
-load_dotenv()
-path = os.getenv("img_path")
+CAMERA_INDEX = 1
+SYNC_DELAY_SECONDS = 0.2
 SYNC_IMAGE_PATH = os.path.join(tempfile.gettempdir(), "robot_sync_frame.png")
 
 
-def get_robot_pose_from_camera(camera):
+def open_camera(camera_index=CAMERA_INDEX):
+    camera = cv.VideoCapture(camera_index)
+
+    if not camera.isOpened():
+        print("Could not open camera index {}".format(camera_index))
+        return None
+
+    return camera
+
+
+def close_camera(camera):
+    if camera is not None:
+        camera.release()
+    cv.destroyAllWindows()
+
+
+def warp_frame(frame):
+    return cv.warpPerspective(frame, warp_matrix, (width, height))
+
+
+def read_warped_frame(camera):
     res, frame = camera.read()
 
     if not res:
         print("Could not read camera frame")
         return None
 
-    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
+    return warp_frame(frame)
+
+
+def get_robot_pose_from_camera(camera):
+    warped_frame = read_warped_frame(camera)
+
+    if warped_frame is None:
+        return None
+
     cv.imwrite(SYNC_IMAGE_PATH, warped_frame)
     color_matrix = create_matrix(SYNC_IMAGE_PATH)
 
     return robot_pose_approx(color_matrix)
+
+
+def show_camera_once(camera):
+    warped_frame = read_warped_frame(camera)
+
+    if warped_frame is None:
+        return
+
+    cv.imshow("camera", warped_frame)
+    cv.waitKey(1)
 
 
 def sync_robot_from_camera(sock, camera):
@@ -94,7 +127,7 @@ def goto_then_sync(sock, camera, row, col):
     if not send_command(sock, build_goto(x, y)):
         return False
 
-    time.sleep(0.2)
+    time.sleep(SYNC_DELAY_SECONDS)
 
     return sync_robot_from_camera(sock, camera)
 
@@ -118,81 +151,101 @@ def follow_path_with_camera_sync(sock, camera, robot_path, step_size=40):
     return True
 
 
-camera = cv.VideoCapture(1)
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
-send_command(sock, build_handshake())
+def run_autonomous_camera():
+    allocatedTime = 1
+    STARTTIME = 2
+    BeginTime = time.time()
+    startTime = time.time()
 
-res, frame = camera.read()
-count = 0
-path_executed = False
-while camera.isOpened():
-    res, frame = camera.read()
+    load_dotenv()
+    path = os.getenv("img_path")
 
-    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
+    camera = open_camera(CAMERA_INDEX)
+    if camera is None:
+        return
 
-    BeginElapsedTime = time.time() - BeginTime
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    if BeginElapsedTime >= STARTTIME:
+    try:
+        sock.connect((HOST, PORT))
+        send_command(sock, build_handshake())
 
-        elapsedTime = time.time() - startTime
+        res, frame = camera.read()
+        count = 0
+        path_executed = False
 
-        if elapsedTime >= allocatedTime:
-            elapsedTime = 0
-            startTime = time.time()
-            if res:
-                im_ = f"{count}.png"
-                full_path = os.path.join(path,im_)
-                cv.imwrite(full_path, warped_frame)
-                #Directory skal være hvor du har projektet gemt
-                count += 1
-                print("Vi tager et billede")
-                #color_matrix = create_matrix(full_path)
+        while camera.isOpened():
+            res, frame = camera.read()
 
-                t = time.time()
-                color_matrix = create_matrix(full_path)
-                print("create_matrix:", time.time() - t)
+            if not res:
+                continue
 
-                t = time.time()
-                white_list = ball_pos_approx(color_matrix, "W")
-                print("ball_pos:", time.time() - t)
+            warped_frame = warp_frame(frame)
 
-                
-                t = time.time()
-                grapler_point = grapler_pos_approx(color_matrix, "G")
-                print(grapler_point)
-                print("grapler:", time.time() - t)
+            BeginElapsedTime = time.time() - BeginTime
 
-                t = time.time()
-                min_list = []
-                for item in white_list:
-                    value = get_h_list(grapler_point[0],grapler_point[1],item[0],item[1])
-                    min_list.append(value)
-                print("minlist", min_list)
-                paired = list(zip(min_list, white_list))
-                paired.sort()  # sorts by min_list values
-                white_list = [item for _, item in paired]
-                print("white_list", white_list)
-                robot_path = A_star(color_matrix, grapler_point, white_list[0])
-                #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
-                print("A_star:", time.time() - t)
+            if BeginElapsedTime >= STARTTIME:
 
-                if not path_executed:
-                    path_executed = follow_path_with_camera_sync(sock, camera, robot_path, step_size=40)
+                elapsedTime = time.time() - startTime
 
-                robot_position= robot_pos(color_matrix)
-                #print("robot_position", robot_position)
+                if elapsedTime >= allocatedTime:
+                    elapsedTime = 0
+                    startTime = time.time()
 
-                Goal_A, Goal_B = goals_pos_approx(color_matrix, "PK", "C")
-                print("Goal_A:", Goal_A)
-                print("Goal_B:", Goal_B)
+                    im_ = f"{count}.png"
+                    full_path = os.path.join(path, im_)
+                    cv.imwrite(full_path, warped_frame)
+                    #Directory skal være hvor du har projektet gemt
+                    count += 1
+                    print("Vi tager et billede")
+                    #color_matrix = create_matrix(full_path)
 
-    cv.imshow("camera", warped_frame)
+                    t = time.time()
+                    color_matrix = create_matrix(full_path)
+                    print("create_matrix:", time.time() - t)
 
-    if cv.waitKey(1) & 0xFF == ord('q'):
-        break
+                    t = time.time()
+                    white_list = ball_pos_approx(color_matrix, "W")
+                    print("ball_pos:", time.time() - t)
 
-sock.close()
-camera.release()
+                    t = time.time()
+                    grapler_point = grapler_pos_approx(color_matrix, "G")
+                    print(grapler_point)
+                    print("grapler:", time.time() - t)
 
-cv.destroyAllWindows()
+                    t = time.time()
+                    min_list = []
+                    for item in white_list:
+                        value = get_h_list(grapler_point[0], grapler_point[1], item[0], item[1])
+                        min_list.append(value)
+                    print("minlist", min_list)
+                    paired = list(zip(min_list, white_list))
+                    paired.sort()  # sorts by min_list values
+                    white_list = [item for _, item in paired]
+                    print("white_list", white_list)
+                    robot_path = A_star(color_matrix, grapler_point, white_list[0])
+                    #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
+                    print("A_star:", time.time() - t)
+
+                    if not path_executed:
+                        path_executed = follow_path_with_camera_sync(sock, camera, robot_path, step_size=40)
+
+                    robot_position = robot_pos(color_matrix)
+                    #print("robot_position", robot_position)
+
+                    Goal_A, Goal_B = goals_pos_approx(color_matrix, "PK", "C")
+                    print("Goal_A:", Goal_A)
+                    print("Goal_B:", Goal_B)
+
+            cv.imshow("camera", warped_frame)
+
+            if cv.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    finally:
+        sock.close()
+        close_camera(camera)
+
+
+if __name__ == "__main__":
+    run_autonomous_camera()
