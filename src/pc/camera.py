@@ -6,7 +6,40 @@ from Imagesplitter import create_matrix
 from id_color import ball_pos_approx, grapler_pos_approx, robot_pos, goals_pos_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star, get_h_list
+import numpy as np
 
+
+# ==========================================
+# 1. PERSPECTIVE WARP SETUP
+# ==========================================
+
+# Define your desired final grid size (640 columns by 480 rows)
+width, height = 640, 480 
+
+# --- pts1: The Raw Camera Corners ---
+# You still MUST measure these from your raw camera feed! 
+# I am using placeholder numbers here. If your physical arena isn't 
+# a perfect rectangle in the camera's eye, these numbers will not form a perfect box.
+pts1 = np.float32([
+    [1, 0],   # Top-Left 
+    [636, 1],   # Top-Right 
+    [639, 476],   # Bottom-Left 
+    [1, 478]   # Bottom-Right 
+]) 
+
+# --- pts2: The Flat 2D Destination Grid ---
+# This forces whatever is inside pts1 to stretch and pin to the exact 
+# corners of a perfect 640x480 mathematical grid.
+pts2 = np.float32([
+    [0, 0],             # Top-Left pinned to 0,0
+    [width, 0],         # Top-Right pinned to 640,0
+    [0, height],        # Bottom-Left pinned to 0,480
+    [width, height]     # Bottom-Right pinned to 640,480
+])
+
+# Compute the transformation matrix
+warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
+# ==========================================
 
 allocatedTime = 1
 STARTTIME = 2
@@ -16,12 +49,14 @@ startTime = time.time()
 load_dotenv()
 path = os.getenv("img_path")
 
-camera = cv.VideoCapture(0)
+camera = cv.VideoCapture(1)
 
 res, frame = camera.read()
 count = 0
 while camera.isOpened():
     res, frame = camera.read()
+
+    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
 
     BeginElapsedTime = time.time() - BeginTime
 
@@ -35,7 +70,7 @@ while camera.isOpened():
             if res:
                 im_ = f"{count}.png"
                 full_path = os.path.join(path,im_)
-                cv.imwrite(full_path, frame)
+                cv.imwrite(full_path, warped_frame)
                 #Directory skal være hvor du har projektet gemt
                 count += 1
                 print("Vi tager et billede")
@@ -76,7 +111,7 @@ while camera.isOpened():
                 print("Goal_A:", Goal_A)
                 print("Goal_B:", Goal_B)
 
-    cv.imshow("camera", frame)
+    cv.imshow("camera", warped_frame)
 
     if cv.waitKey(1) & 0xFF == ord('q'):
         break
