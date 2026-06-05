@@ -1,3 +1,5 @@
+import math
+
 def ball_pos_approx(matrix, color):
     row = len(matrix)
     col = len(matrix[0])
@@ -154,3 +156,42 @@ def robot_pos(matrix):
 
     return robot_pos
 
+def color_center(matrix, color):
+    row = len(matrix)
+    col = len(matrix[0])
+
+    color_list = []
+
+    for i in range(row):
+        for j in range(col):
+            if matrix[i][j] == color:
+                color_list.append((i, j))
+
+    if len(color_list) == 0:
+        return None
+
+    return (
+        sum(p[0] for p in color_list) / len(color_list),
+        sum(p[1] for p in color_list) / len(color_list)
+    )
+
+
+def robot_pose_approx(matrix):
+    front = color_center(matrix, "Y")
+    rear = color_center(matrix, "P")
+
+    if front is None or rear is None:
+        return None
+
+    front_row, front_col = front
+    rear_row, rear_col = rear
+
+    center_row = (front_row + rear_row) / 2
+    center_col = (front_col + rear_col) / 2
+
+    dx = front_col - rear_col
+    dy = front_row - rear_row
+
+    heading = math.degrees(math.atan2(dy, dx)) % 360
+
+    return center_col, center_row, heading

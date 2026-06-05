@@ -1,11 +1,14 @@
 import cv2 as cv
 import os
+import socket
+import tempfile
 import time
 #from create_test_image import test_matrix
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx, grapler_pos_approx, robot_pos, goals_pos_approx
+from id_color import ball_pos_approx, grapler_pos_approx, robot_pos, goals_pos_approx, robot_pose_approx
 from dotenv import load_dotenv
 from collection_algorithm import A_star, get_h_list
+from com_protocol import HOST, PORT, send_command, build_handshake, build_goto, build_possync
 import numpy as np
 
 
@@ -48,11 +51,81 @@ startTime = time.time()
 
 load_dotenv()
 path = os.getenv("img_path")
+SYNC_IMAGE_PATH = os.path.join(tempfile.gettempdir(), "robot_sync_frame.png")
+
+
+def get_robot_pose_from_camera(camera):
+    res, frame = camera.read()
+
+    if not res:
+        print("Could not read camera frame")
+        return None
+
+    warped_frame = cv.warpPerspective(frame, warp_matrix, (width, height))
+    cv.imwrite(SYNC_IMAGE_PATH, warped_frame)
+    color_matrix = create_matrix(SYNC_IMAGE_PATH)
+
+    return robot_pose_approx(color_matrix)
+
+
+def sync_robot_from_camera(sock, camera):
+    pose = get_robot_pose_from_camera(camera)
+
+    if pose is None:
+        print("Could not detect robot pose from camera")
+        return False
+
+    x, y, heading = pose
+    x = int(round(x))
+    y = int(round(y))
+    heading_tenths = int(round(heading * 10))
+
+    print("Camera sync: x={}, y={}, heading={:.1f}".format(x, y, heading))
+
+    return send_command(sock, build_possync(x, y, heading_tenths))
+
+
+def goto_then_sync(sock, camera, row, col):
+    x = int(round(col))
+    y = int(round(row))
+
+    print("Sending GOTO x={}, y={}".format(x, y))
+
+    if not send_command(sock, build_goto(x, y)):
+        return False
+
+    time.sleep(0.2)
+
+    return sync_robot_from_camera(sock, camera)
+
+
+def follow_path_with_camera_sync(sock, camera, robot_path, step_size=40):
+    if not robot_path:
+        return False
+
+    if not sync_robot_from_camera(sock, camera):
+        return False
+
+    waypoints = robot_path[::step_size]
+
+    if waypoints[-1] != robot_path[-1]:
+        waypoints.append(robot_path[-1])
+
+    for row, col in waypoints:
+        if not goto_then_sync(sock, camera, row, col):
+            return False
+
+    return True
+
 
 camera = cv.VideoCapture(1)
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect((HOST, PORT))
+send_command(sock, build_handshake())
 
 res, frame = camera.read()
 count = 0
+path_executed = False
 while camera.isOpened():
     res, frame = camera.read()
 
@@ -104,6 +177,9 @@ while camera.isOpened():
                 #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
                 print("A_star:", time.time() - t)
 
+                if not path_executed:
+                    path_executed = follow_path_with_camera_sync(sock, camera, robot_path, step_size=40)
+
                 robot_position= robot_pos(color_matrix)
                 #print("robot_position", robot_position)
 
@@ -116,6 +192,7 @@ while camera.isOpened():
     if cv.waitKey(1) & 0xFF == ord('q'):
         break
 
+sock.close()
 camera.release()
 
 cv.destroyAllWindows()
