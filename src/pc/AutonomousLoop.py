@@ -14,7 +14,8 @@ allocatedTime = 1
 STARTTIME = 2
 
 load_dotenv()
-path = os.getenv("img_path")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+path = os.path.join(BASE_DIR, "images")
 
 camera = cv.VideoCapture(0)
 
