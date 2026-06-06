@@ -7,7 +7,7 @@ import heapq
 #from camera import color_matrix
 #from create_test_image import test_matrix
 
-ROW = 480
+ROW = 360
 COL = 640
 
 #ROW = 62
@@ -134,7 +134,7 @@ def A_star(color_matrix, src, dest):
                     print("destination cell found")
                     path = trace_path(cell_details,dest[1],dest[0])
                     found_dest = True
-                    print("You reached the destination")
+                    print("Pathfinding done")
                     return path
                 else:
                     g_new = cell_details[row][col].g + 1.4

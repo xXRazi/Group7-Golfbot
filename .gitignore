@@ -210,4 +210,5 @@ __marimo__/
 
 *.png
 
-.DS_Store.DS_Store
+.DS_Store
+*.DS_Store

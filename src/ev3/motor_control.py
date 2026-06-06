@@ -15,8 +15,8 @@ class MotorController:
     # Use:
     #   x = column, valid range 0..639
     #   y = row,    valid range 0..479
-    MAP_ROWS = 360
-    MAP_COLS = 640
+    MAP_ROWS = 640
+    MAP_COLS = 360
 
     # Each map coordinate increment in centimeters.
     CM_PER_MAP_UNIT = 0.26

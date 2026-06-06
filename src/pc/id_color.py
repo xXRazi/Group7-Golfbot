@@ -50,11 +50,11 @@ def ball_pos_approx_shape(matrix, color):
             fill_ratio = area / bbox_area
 
             if color == "O":
-                if not (20 < area < 250):
+                if not (40 < area < 250):
                     continue
-                if not (0.7 < ratio < 1.3):
+                if not (0.75 < ratio < 1.25):
                     continue
-                if not (0.45 < fill_ratio < 0.85):
+                if not (0.50 < fill_ratio < 0.90):
                     continue
 
             elif color == "W":

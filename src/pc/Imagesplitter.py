@@ -6,6 +6,23 @@ import cv2 as cv
 def create_matrix(img_):
     img = io.imread(img_)
 
+    # A. Median Blur to remove sharp glare spots
+    #blurred = cv.medianBlur(img, 5) 
+    
+    # B. Uneven Illumination Correction (CLAHE)
+    # Convert to LAB to isolate the Lightness channel
+    #lab = cv.cvtColor(blurred, cv.COLOR_BGR2LAB)
+    #l_channel, a_channel, b_channel = cv.split(lab)
+    
+    # Apply CLAHE to the L channel
+    #clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    #cl = clahe.apply(l_channel)
+    
+    # Merge back and convert to BGR, then to HSV
+    #merged_lab = cv.merge((cl, a_channel, b_channel))
+    #balanced_bgr = cv.cvtColor(merged_lab, cv.COLOR_LAB2BGR)
+    #hsv_img = cv.cvtColor(balanced_bgr, cv.COLOR_BGR2HSV)
+
     hsv_img = cv.cvtColor(img, cv.COLOR_RGB2HSV)
 
     H, W, C = img.shape
