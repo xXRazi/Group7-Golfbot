@@ -56,7 +56,7 @@ def create_matrix(img_):
         "RR": (np.array([160, 100, 100]), np.array([179, 255, 255])),
         "O": (np.array([14, 80, 240]), np.array([30, 255, 255])),
         "B": (np.array([0, 0, 0]), np.array([180, 255, 50])),
-        "G": (np.array([40, 50, 50]), np.array([80, 255, 255])),
+        "G": (np.array([40, 60, 40]), np.array([90, 255, 255])),
         "b": (np.array([85, 100, 100]), np.array([105, 255, 255])),
         "_": (np.array([115, 120, 120]), np.array([175, 200, 215])),
         "Y": (np.array([27, 85, 230]), np.array([33, 180, 255])),
