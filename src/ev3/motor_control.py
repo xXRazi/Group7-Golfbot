@@ -27,7 +27,7 @@ class MotorController:
 
     # Turn calibration.
     # This is motor degrees per requested robot turn degree.
-    DEGREES_PER_TURN_DEGREE = 2.2
+    DEGREES_PER_TURN_DEGREE = 2.35
 
     # Wheel rotation per real-world cm.
     DEGREES_PER_CM = 25
