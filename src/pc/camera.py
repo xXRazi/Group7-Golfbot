@@ -18,6 +18,7 @@ from com_protocol import (
     build_possync,
     build_claw_open,
     build_claw_close,
+    build_claw_deliver,
     build_setspeed,
     build_turn,
 )
@@ -60,9 +61,9 @@ CAMERA_INDEX = 0
 SYNC_DELAY_SECONDS = 0.2
 SYNC_IMAGE_PATH = os.path.join(IMAGE_DIR, "robot_sync_frame.png")
 
-# Stop this many warped-image/map units before the ball center, measured from
-# the green grappler marker / claw reference point, not from the robot center.
-# Start with 18-22 and tune on the real robot. Larger values stop earlier.
+# Coarse-path stop distance. This does NOT control the last few centimeters of
+# the pickup when USE_COARSE_PICKUP_PREAPPROACH is False. For the final grab,
+# tune PICKUP_FINAL_SCOOP_DISTANCE and PICKUP_GRAPPLER_CLOSE_DISTANCE below.
 PICKUP_STOP_DISTANCE = 10
 
 # The green grappler marker is in front of the robot center. A* was previously
@@ -112,7 +113,25 @@ PICKUP_DIRECT_FALLBACK_MAX_DISTANCE = 90.0
 # After the camera says the robot is close, move this many extra map pixels
 # forward before closing. This intentionally puts the ball slightly inside the
 # fingers instead of right at the outside edge. Tune this first.
-PICKUP_FINAL_SCOOP_DISTANCE = 6.0
+PICKUP_FINAL_SCOOP_DISTANCE = 12.0
+
+# If the ball is already close to the green grappler marker, do the final scoop
+# and close instead of doing another heading correction. This fixes both the
+# case where the robot turns while the ball is already in the grappler area and
+# the case where it stops just slightly outside the fingers.
+PICKUP_GRAPPLER_CLOSE_DISTANCE = 20.0
+
+# Delivery settings. Goal A is the pink marker on the right side and should be
+# approached while facing +X. Goal B is the cyan marker on the left side and
+# should be approached while facing -X. The marker is roughly 10 cm in front of
+# the actual goal, so the robot lines the ball/claw up on the marker and then
+# uses the EV3 CLAW_DELIVER routine.
+DELIVERY_GOAL_PREFERENCE = "nearest"  # "nearest", "A", or "B"
+DELIVERY_CENTER_TO_MARKER_DISTANCE = 42.0
+DELIVERY_PREAPPROACH_EXTRA_DISTANCE = 45.0
+DELIVERY_POSITION_TOLERANCE = 9.0
+DELIVERY_HEADING_TOLERANCE = 7.0
+STOP_AFTER_SUCCESSFUL_DELIVERY = True
 
 # After the robot center reaches the pickup pose, rotate in place so the claw
 # actually points at the ball. GOTO only controls position; without this final
@@ -858,6 +877,12 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             )
         )
 
+        if grappler_point is not None and grappler_to_ball <= PICKUP_GRAPPLER_CLOSE_DISTANCE:
+            print(
+                "Pickup servo: ball is inside grappler range; doing final scoop instead of turning"
+            )
+            return final_scoop_forward_before_close(sock, camera, robot_pose)
+
         # The front/claw is roughly this many map pixels in front of the robot
         # center. When the center is this far from the ball and facing it, the
         # ball should be between the fingers. This is easier to tune than the
@@ -1086,6 +1111,186 @@ def approach_ball_and_close_claw(
     return send_command(sock, build_claw_close())
 
 
+def capture_delivery_scene(camera):
+    """Read one warped frame and detect robot pose plus both goal markers."""
+    warped_frame = read_warped_frame(camera)
+
+    if warped_frame is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+        temp_path = temp_file.name
+
+    try:
+        cv.imwrite(temp_path, warped_frame)
+        color_matrix = create_matrix(temp_path)
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+    robot_pose = robot_pose_approx(color_matrix)
+    goals = goals_pos_approx(color_matrix, "PK", "C")
+
+    return {
+        "color_matrix": color_matrix,
+        "robot_pose": robot_pose,
+        "goals": goals,
+    }
+
+
+def delivery_goal_heading(goal_name):
+    if goal_name == "A":
+        return 0.0
+    if goal_name == "B":
+        return 180.0
+    raise ValueError("goal_name must be A or B")
+
+
+def delivery_center_target(goal_marker, goal_name, center_to_marker_distance=DELIVERY_CENTER_TO_MARKER_DISTANCE):
+    """Return the robot-center point that places the claw/ball at the goal marker."""
+    marker_row, marker_col = goal_marker
+    heading = delivery_goal_heading(goal_name)
+    heading_rad = math.radians(heading)
+
+    target_col = float(marker_col) - float(center_to_marker_distance) * math.cos(heading_rad)
+    target_row = float(marker_row) - float(center_to_marker_distance) * math.sin(heading_rad)
+
+    return clamp_map_point((target_row, target_col), margin=5)
+
+
+def choose_delivery_goal(robot_pose, goal_a, goal_b, preference=DELIVERY_GOAL_PREFERENCE):
+    """Pick a goal and return (name, marker)."""
+    if preference == "A":
+        return "A", goal_a
+    if preference == "B":
+        return "B", goal_b
+
+    # Default: use the closest delivery center target, not just closest marker.
+    if robot_pose is None:
+        return "A", goal_a
+
+    robot_center = robot_center_point(robot_pose)
+    target_a = delivery_center_target(goal_a, "A")
+    target_b = delivery_center_target(goal_b, "B")
+
+    if point_distance(robot_center, target_a) <= point_distance(robot_center, target_b):
+        return "A", goal_a
+
+    return "B", goal_b
+
+
+def goto_map_point_with_pose(sock, camera, robot_pose, target_point, label="Delivery GOTO"):
+    """Sync a known camera pose, GOTO a map point, then sync again."""
+    target_row, target_col = clamp_map_point(target_point, margin=5)
+
+    print("{}: target center=({}, {})".format(label, target_col, target_row))
+
+    if robot_pose is not None:
+        if not sync_robot_pose_value(sock, robot_pose, label="{} pre-GOTO".format(label)):
+            return False
+    else:
+        if not sync_robot_from_camera(sock, camera):
+            return False
+
+    if not send_command(sock, build_goto(target_col, target_row)):
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+    return sync_robot_from_camera(sock, camera)
+
+
+def deliver_held_ball_to_goal(sock, camera):
+    """Line up with one goal marker and run the EV3 delivery motion."""
+    scene = capture_delivery_scene(camera)
+
+    if scene is None:
+        print("Delivery: could not read camera frame")
+        return False
+
+    robot_pose = scene["robot_pose"]
+    goals = scene["goals"]
+
+    if robot_pose is None:
+        print("Delivery: could not detect robot pose")
+        return False
+
+    if goals is None:
+        print("Delivery: could not detect both goal markers")
+        return False
+
+    goal_a, goal_b = goals
+    goal_name, goal_marker = choose_delivery_goal(robot_pose, goal_a, goal_b)
+    goal_heading = delivery_goal_heading(goal_name)
+
+    final_target = delivery_center_target(
+        goal_marker,
+        goal_name,
+        DELIVERY_CENTER_TO_MARKER_DISTANCE,
+    )
+    pre_target = delivery_center_target(
+        goal_marker,
+        goal_name,
+        DELIVERY_CENTER_TO_MARKER_DISTANCE + DELIVERY_PREAPPROACH_EXTRA_DISTANCE,
+    )
+
+    print(
+        "Delivery: chosen Goal_{} marker={}, pre_target={}, final_target={}, heading={:.1f}".format(
+            goal_name,
+            goal_marker,
+            pre_target,
+            final_target,
+            goal_heading,
+        )
+    )
+
+    # 1) Get behind the marker, inside the field.
+    if not goto_map_point_with_pose(sock, camera, robot_pose, pre_target, label="Delivery pre-approach"):
+        return False
+
+    # 2) Face directly into the goal before the final short push-up move.
+    print("Delivery: aligning to goal heading {:.1f}".format(goal_heading))
+    if not turn_robot_to_heading(sock, camera, goal_heading, tolerance_degrees=DELIVERY_HEADING_TOLERANCE):
+        return False
+
+    # 3) Move the ball/claw onto the marker.
+    synced_pose = sync_robot_pose_from_camera(sock, camera)
+    if not goto_map_point_with_pose(sock, camera, synced_pose, final_target, label="Delivery final lineup"):
+        return False
+
+    # 4) Correct if the final move undershot.
+    scene = capture_delivery_scene(camera)
+    if scene is not None and scene["robot_pose"] is not None:
+        robot_pose = scene["robot_pose"]
+        current_center = robot_center_point(robot_pose)
+        remaining = point_distance(current_center, final_target)
+        print("Delivery: final center error={:.1f}".format(remaining))
+
+        if remaining > DELIVERY_POSITION_TOLERANCE:
+            if not goto_map_point_with_pose(
+                sock,
+                camera,
+                robot_pose,
+                final_target,
+                label="Delivery final correction",
+            ):
+                return False
+
+    print("Delivery: final heading alignment")
+    if not turn_robot_to_heading(sock, camera, goal_heading, tolerance_degrees=DELIVERY_HEADING_TOLERANCE):
+        return False
+
+    print("Delivery: stopping before deliver motion")
+    if not send_command(sock, build_setspeed(0, 0)):
+        return False
+
+    time.sleep(PICKUP_SETTLE_SECONDS)
+
+    print("Delivery: running CLAW_DELIVER")
+    return send_command(sock, build_claw_deliver())
+
+
 def run_autonomous_camera():
     allocatedTime = 1
     STARTTIME = 2
@@ -1192,8 +1397,23 @@ def run_autonomous_camera():
                         pickup_started = True
 
                         if pickup_success:
+                            print("Pickup succeeded; starting delivery")
                             path_executed = True
                             pickup_started = False
+
+                            delivery_success = deliver_held_ball_to_goal(sock, camera)
+
+                            if delivery_success:
+                                print("Delivery complete")
+
+                                if STOP_AFTER_SUCCESSFUL_DELIVERY:
+                                    break
+
+                                path_executed = False
+                                pickup_started = False
+                            else:
+                                print("Delivery failed; keeping claw closed and stopping autonomous action")
+                                break
                         else:
                             print(
                                 "Pickup attempt did not finish cleanly; will retry from the current position without reopening the claw"
