@@ -20,7 +20,7 @@ def create_matrix(img_):
     # be checked before RR. Otherwise the marker becomes RR and robot_pose_approx()
     # cannot find the rear marker.
     color_ranges = [
-        ("W",  np.array([0, 0, 245]),     np.array([180, 18, 255])),
+        ("W",  np.array([0, 0, 205]),     np.array([180, 55, 255])),
 
         # Robot marker colors.
         # Yellow is intentionally broad enough for the yellow tape under webcam light.

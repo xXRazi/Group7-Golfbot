@@ -114,13 +114,13 @@ def _ball_shape_is_valid(blob, color):
     ratio = width / height
 
     if color == "W":
-        if not (35 <= area <= 130):
+        if not (40 <= area <= 160):
             return False
         if not (6 <= height <= 14 and 6 <= width <= 14):
             return False
         if not (0.65 <= ratio <= 1.45):
             return False
-        if not (0.50 <= fill_ratio <= 0.92):
+        if not (0.52 <= fill_ratio <= 0.95):
             return False
         return True
 
