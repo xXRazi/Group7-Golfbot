@@ -1,155 +1,41 @@
 import math
 
 
-def ball_pos_approx_shape(matrix, color):
-    row = len(matrix)
-    col = len(matrix[0])
-
-    visited = set()
-    balls = []
-
-    for i in range(row):
-        for j in range(col):
-            if matrix[i][j] != color or (i, j) in visited:
-                continue
-
-            stack = [(i, j)]
-            blob = []
-            visited.add((i, j))
-
-            while stack:
-                r, c = stack.pop()
-                blob.append((r, c))
-
-                for dr, dc in [
-                    (-1, 0), (1, 0), (0, -1), (0, 1),
-                    (-1, -1), (-1, 1), (1, -1), (1, 1)
-                ]:
-                    nr = r + dr
-                    nc = c + dc
-
-                    if 0 <= nr < row and 0 <= nc < col:
-                        if matrix[nr][nc] == color and (nr, nc) not in visited:
-                            visited.add((nr, nc))
-                            stack.append((nr, nc))
-
-            area = len(blob)
-
-            rows = [p[0] for p in blob]
-            cols = [p[1] for p in blob]
-
-            min_r, max_r = min(rows), max(rows)
-            min_c, max_c = min(cols), max(cols)
-
-            height = max_r - min_r + 1
-            width = max_c - min_c + 1
-
-            if height == 0 or width == 0:
-                continue
-
-            ratio = width / height
-            bbox_area = width * height
-            fill_ratio = area / bbox_area
-
-            if color == "O":
-                if not (20 < area < 180):
-                    continue
-                if not (0.75 < ratio < 1.25):
-                    continue
-                if not (0.45 < fill_ratio < 0.90):
-                    continue
-
-            elif color == "W":
-                if not (15 < area < 350):
-                    continue
-                if not (0.45 < ratio < 1.8):
-                    continue
-                if not (0.25 < fill_ratio < 0.95):
-                    continue
-
-            center_r = int(sum(rows) / area)
-            center_c = int(sum(cols) / area)
-
-            balls.append((center_r, center_c))
-
-    return balls
-
-
-def grapler_pos_approx(matrix, color):
-    row = len(matrix)
-    col = len(matrix[0])
-
-    color_list = []
-
-    for i in range(row):
-        for j in range(col):
-            if matrix[i][j] == color:
-                color_list.append((i, j))
-
-    if len(color_list) == 0:
-        return None
-
-    Grapler_one_list = []
-    Grapler_two_list = []
-
-    for i in color_list:
-        if abs(color_list[0][0] - i[0]) <= 10 and abs(color_list[0][1] - i[1]) <= 10:
-            Grapler_one_list.append(i)
-        else:
-            Grapler_two_list.append(i)
-
-    if len(Grapler_one_list) == 0 or len(Grapler_two_list) == 0:
-        return None
-
-    Grapler_one_average = (
-        sum(p[0] for p in Grapler_one_list) // len(Grapler_one_list),
-        sum(p[1] for p in Grapler_one_list) // len(Grapler_one_list)
-    )
-
-    Grapler_two_average = (
-        sum(p[0] for p in Grapler_two_list) // len(Grapler_two_list),
-        sum(p[1] for p in Grapler_two_list) // len(Grapler_two_list)
-    )
-
-    Grapler_midpoint = (
-        (Grapler_one_average[0] + Grapler_two_average[0]) // 2,
-        (Grapler_one_average[1] + Grapler_two_average[1]) // 2
-    )
-
-    return Grapler_midpoint
-
+# ============================================================
+# Connected-component helpers
+# ============================================================
 
 def color_blobs(matrix, color, min_area=1, max_area=None):
     """Return connected blobs for one matrix color."""
-    row = len(matrix)
-    col = len(matrix[0])
+    row_count = len(matrix)
+    col_count = len(matrix[0])
     visited = set()
     blobs = []
 
-    for i in range(row):
-        for j in range(col):
-            if matrix[i][j] != color or (i, j) in visited:
+    for row in range(row_count):
+        for col in range(col_count):
+            if matrix[row][col] != color or (row, col) in visited:
                 continue
 
-            stack = [(i, j)]
-            visited.add((i, j))
+            stack = [(row, col)]
+            visited.add((row, col))
             pixels = []
 
             while stack:
-                r, c = stack.pop()
-                pixels.append((r, c))
+                current_row, current_col = stack.pop()
+                pixels.append((current_row, current_col))
 
-                for dr, dc in [
+                for row_delta, col_delta in [
                     (-1, 0), (1, 0), (0, -1), (0, 1),
-                    (-1, -1), (-1, 1), (1, -1), (1, 1)
+                    (-1, -1), (-1, 1), (1, -1), (1, 1),
                 ]:
-                    nr = r + dr
-                    nc = c + dc
+                    next_row = current_row + row_delta
+                    next_col = current_col + col_delta
 
-                    if 0 <= nr < row and 0 <= nc < col:
-                        if matrix[nr][nc] == color and (nr, nc) not in visited:
-                            visited.add((nr, nc))
-                            stack.append((nr, nc))
+                    if 0 <= next_row < row_count and 0 <= next_col < col_count:
+                        if matrix[next_row][next_col] == color and (next_row, next_col) not in visited:
+                            visited.add((next_row, next_col))
+                            stack.append((next_row, next_col))
 
             area = len(pixels)
 
@@ -158,14 +44,14 @@ def color_blobs(matrix, color, min_area=1, max_area=None):
             if max_area is not None and area > max_area:
                 continue
 
-            rows = [p[0] for p in pixels]
-            cols = [p[1] for p in pixels]
+            rows = [pixel[0] for pixel in pixels]
+            cols = [pixel[1] for pixel in pixels]
 
-            min_r, max_r = min(rows), max(rows)
-            min_c, max_c = min(cols), max(cols)
+            min_row, max_row = min(rows), max(rows)
+            min_col, max_col = min(cols), max(cols)
 
-            height = max_r - min_r + 1
-            width = max_c - min_c + 1
+            height = max_row - min_row + 1
+            width = max_col - min_col + 1
             bbox_area = height * width
 
             blobs.append({
@@ -173,10 +59,10 @@ def color_blobs(matrix, color, min_area=1, max_area=None):
                 "area": area,
                 "center_row": sum(rows) / area,
                 "center_col": sum(cols) / area,
-                "min_row": min_r,
-                "max_row": max_r,
-                "min_col": min_c,
-                "max_col": max_c,
+                "min_row": min_row,
+                "max_row": max_row,
+                "min_col": min_col,
+                "max_col": max_col,
                 "height": height,
                 "width": width,
                 "fill_ratio": area / bbox_area if bbox_area else 0.0,
@@ -186,21 +72,162 @@ def color_blobs(matrix, color, min_area=1, max_area=None):
     return blobs
 
 
+def _blob_distance(blob_a, blob_b):
+    return math.hypot(
+        blob_a["center_row"] - blob_b["center_row"],
+        blob_a["center_col"] - blob_b["center_col"],
+    )
+
+
+def _weighted_center(blobs):
+    total_area = sum(blob["area"] for blob in blobs)
+
+    if total_area <= 0:
+        return None
+
+    center_row = sum(blob["center_row"] * blob["area"] for blob in blobs) / total_area
+    center_col = sum(blob["center_col"] * blob["area"] for blob in blobs) / total_area
+
+    return center_row, center_col
+
+
+# ============================================================
+# Ball detection
+# ============================================================
+
+def _ball_shape_is_valid(blob, color):
+    """
+    Decide if a color blob is actually a ball.
+
+    White false positives usually come from white clothing, robot reflections,
+    white wall/goal edges, or tiny light specks. The real balls in the warped
+    camera image are compact, roughly circular blobs.
+    """
+    area = blob["area"]
+    height = blob["height"]
+    width = blob["width"]
+    fill_ratio = blob["fill_ratio"]
+
+    if height <= 0 or width <= 0:
+        return False
+
+    ratio = width / height
+
+    if color == "W":
+        if not (35 <= area <= 130):
+            return False
+        if not (6 <= height <= 14 and 6 <= width <= 14):
+            return False
+        if not (0.65 <= ratio <= 1.45):
+            return False
+        if not (0.50 <= fill_ratio <= 0.92):
+            return False
+        return True
+
+    if color == "O":
+        if not (25 <= area <= 160):
+            return False
+        if not (5 <= height <= 16 and 5 <= width <= 16):
+            return False
+        if not (0.60 <= ratio <= 1.55):
+            return False
+        if not (0.40 <= fill_ratio <= 0.92):
+            return False
+        return True
+
+    if not (25 <= area <= 160):
+        return False
+    if not (5 <= height <= 16 and 5 <= width <= 16):
+        return False
+    if not (0.60 <= ratio <= 1.55):
+        return False
+    if not (0.40 <= fill_ratio <= 0.92):
+        return False
+
+    return True
+
+
+def ball_pos_approx_shape(matrix, color):
+    """Return center points of real ball-shaped blobs as (row, col)."""
+    blobs = color_blobs(matrix, color, min_area=1, max_area=2000)
+    balls = []
+    rejected = 0
+
+    for blob in blobs:
+        if not _ball_shape_is_valid(blob, color):
+            rejected += 1
+            continue
+
+        center_row = int(round(blob["center_row"]))
+        center_col = int(round(blob["center_col"]))
+        balls.append((center_row, center_col))
+
+    if rejected > 0:
+        print(
+            "Ball detection debug: color={}, accepted={}, rejected={}".format(
+                color,
+                balls,
+                rejected,
+            )
+        )
+
+    return balls
+
+
+# ============================================================
+# Grappler / goal / robot detection
+# ============================================================
+
+def grapler_pos_approx(matrix, color):
+    """
+    Return the grappler midpoint as (row, col).
+
+    The old code split green pixels into exactly two groups. That failed when the
+    green pieces were close together or partly merged, returning None even though
+    the grappler was visible.
+    """
+    blobs = color_blobs(matrix, color, min_area=3, max_area=600)
+
+    if not blobs:
+        print("Grappler debug: no {} blobs found".format(color))
+        return None
+
+    largest = blobs[0]
+    nearby_blobs = []
+
+    for blob in blobs:
+        if _blob_distance(largest, blob) <= 45.0:
+            nearby_blobs.append(blob)
+
+    if not nearby_blobs:
+        nearby_blobs = [largest]
+
+    center = _weighted_center(nearby_blobs[:4])
+
+    if center is None:
+        return None
+
+    result = (int(round(center[0])), int(round(center[1])))
+
+    print(
+        "Grappler debug: blobs={}, used={}, result={}".format(
+            len(blobs),
+            len(nearby_blobs[:4]),
+            result,
+        )
+    )
+
+    return result
+
+
 def goal_marker_pos_approx(matrix, color, side=None):
     """
     Find one goal marker robustly.
 
-    The old goals_pos_approx() averaged all pixels of a color. That could make
-    the robot think the goal was near the robot if some robot tape or noise had
-    the same color.
-
-    This version uses connected blobs and chooses:
-      - rightmost/largest marker for the right-side PK goal
-      - leftmost/largest marker for the left-side C goal
+    Goal markers are chosen from connected blobs instead of averaging every pixel
+    of a color.
     """
-    row_count = len(matrix)
     col_count = len(matrix[0])
-
     blobs = color_blobs(matrix, color, min_area=3, max_area=2000)
 
     if not blobs:
@@ -208,10 +235,7 @@ def goal_marker_pos_approx(matrix, color, side=None):
         return None
 
     if side == "right":
-        side_blobs = [
-            blob for blob in blobs
-            if blob["center_col"] > col_count * 0.55
-        ]
+        side_blobs = [blob for blob in blobs if blob["center_col"] > col_count * 0.55]
 
         if side_blobs:
             chosen = max(side_blobs, key=lambda blob: (blob["area"], blob["center_col"]))
@@ -219,10 +243,7 @@ def goal_marker_pos_approx(matrix, color, side=None):
             chosen = max(blobs, key=lambda blob: (blob["center_col"], blob["area"]))
 
     elif side == "left":
-        side_blobs = [
-            blob for blob in blobs
-            if blob["center_col"] < col_count * 0.45
-        ]
+        side_blobs = [blob for blob in blobs if blob["center_col"] < col_count * 0.45]
 
         if side_blobs:
             chosen = max(side_blobs, key=lambda blob: (blob["area"], -blob["center_col"]))
@@ -234,7 +255,7 @@ def goal_marker_pos_approx(matrix, color, side=None):
 
     result = (
         int(round(chosen["center_row"])),
-        int(round(chosen["center_col"]))
+        int(round(chosen["center_col"])),
     )
 
     print(
@@ -269,9 +290,6 @@ def goals_pos_approx(matrix, colorA, colorB):
     In this project:
       Goal A = PK marker on the right side
       Goal B = C marker on the left side
-
-    The markers are now inside the goals. These returned positions are therefore
-    aiming markers, not drive-to positions.
     """
     side_a = _goal_side_hint(colorA, "right")
     side_b = _goal_side_hint(colorB, "left")
@@ -286,40 +304,34 @@ def goals_pos_approx(matrix, colorA, colorB):
 
 
 def robot_pos(matrix):
-    row = len(matrix)
-    col = len(matrix[0])
+    row_count = len(matrix)
+    col_count = len(matrix[0])
+    positions = []
 
-    robot_pos = []
+    for row in range(row_count):
+        for col in range(col_count):
+            if matrix[row][col] in ("Y", "P", "B"):
+                positions.append((row, col))
 
-    for i in range(row):
-        for j in range(col):
-            if matrix[i][j] == "Y":
-                robot_pos.append((i, j))
-            if matrix[i][j] == "P":
-                robot_pos.append((i, j))
-            if matrix[i][j] == "B":
-                robot_pos.append((i, j))
-
-    return robot_pos
+    return positions
 
 
 def color_center(matrix, color):
-    row = len(matrix)
-    col = len(matrix[0])
-
+    row_count = len(matrix)
+    col_count = len(matrix[0])
     color_list = []
 
-    for i in range(row):
-        for j in range(col):
-            if matrix[i][j] == color:
-                color_list.append((i, j))
+    for row in range(row_count):
+        for col in range(col_count):
+            if matrix[row][col] == color:
+                color_list.append((row, col))
 
     if len(color_list) == 0:
         return None
 
     return (
-        sum(p[0] for p in color_list) / len(color_list),
-        sum(p[1] for p in color_list) / len(color_list)
+        sum(point[0] for point in color_list) / len(color_list),
+        sum(point[1] for point in color_list) / len(color_list),
     )
 
 
@@ -330,22 +342,10 @@ def _point_in_expanded_bbox(row, col, bbox_blob, margin):
     )
 
 
-def _weighted_center(blobs):
-    total_area = sum(blob["area"] for blob in blobs)
-
-    if total_area <= 0:
-        return None
-
-    row = sum(blob["center_row"] * blob["area"] for blob in blobs) / total_area
-    col = sum(blob["center_col"] * blob["area"] for blob in blobs) / total_area
-
-    return row, col
-
-
-def _distance_between_blobs(a, b):
+def _distance_between_blobs(blob_a, blob_b):
     return math.hypot(
-        a["center_row"] - b["center_row"],
-        a["center_col"] - b["center_col"]
+        blob_a["center_row"] - blob_b["center_row"],
+        blob_a["center_col"] - blob_b["center_col"],
     )
 
 
@@ -361,10 +361,12 @@ def robot_pose_approx(matrix):
     black_blobs = color_blobs(matrix, "B", min_area=150)
 
     if not yellow_blobs or not pink_blobs:
-        print("Robot pose debug: missing marker blobs Y={}, P={}".format(
-            len(yellow_blobs),
-            len(pink_blobs)
-        ))
+        print(
+            "Robot pose debug: missing marker blobs Y={}, P={}".format(
+                len(yellow_blobs),
+                len(pink_blobs),
+            )
+        )
         return None
 
     marker_margin = 55
@@ -380,7 +382,7 @@ def robot_pose_approx(matrix):
                 blob["center_row"],
                 blob["center_col"],
                 body,
-                marker_margin
+                marker_margin,
             )
         ]
 
@@ -390,7 +392,7 @@ def robot_pose_approx(matrix):
                 blob["center_row"],
                 blob["center_col"],
                 body,
-                marker_margin
+                marker_margin,
             )
         ]
 

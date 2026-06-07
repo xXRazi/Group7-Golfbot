@@ -1,297 +1,719 @@
 import cv2 as cv
-import os
-import time
-import socket
 import math
+import os
+import socket
+import time
 
+import numpy as np
 from dotenv import load_dotenv
+
 from Imagesplitter import create_matrix
-from id_color import ball_pos_approx_shape, grapler_pos_approx, goals_pos_approx
-from collection_algorithm import A_star
+from id_color import (
+    ball_pos_approx_shape,
+    goals_pos_approx,
+    grapler_pos_approx,
+    robot_pos,
+    robot_pose_approx,
+)
+from collection_algorithm import get_h_list
 from com_protocol import (
     HOST,
     PORT,
-    send_command,
-    build_handshake,
-    build_goto,
-    build_finish,
-    build_setspeed,
-    build_claw_open,
     build_claw_close,
-    build_claw_deliver,
+    build_claw_open,
+    build_goto,
+    build_handshake,
+    build_possync,
+    build_setspeed,
+    build_turn,
+    send_command,
 )
 
-allocatedTime = 1
-STARTTIME = 2
 
-# Stop this many warped-image/map units before the ball center.
-# 35 units is about 9 cm with CM_PER_MAP_UNIT=0.26 on the EV3.
-PICKUP_STOP_DISTANCE = 35
+# ==========================================
+# 1. PERSPECTIVE WARP SETUP
+# ==========================================
 
-# Smaller pickup waypoints prevent one long final movement from pushing the ball.
-PICKUP_WAYPOINT_STEP_SIZE = 15
-PICKUP_SETTLE_SECONDS = 0.15
+# Final warped camera/map size: x = 0..639, y = 0..359.
+width, height = 640, 360
+
+# Raw camera corners, ordered as:
+# top-left, top-right, bottom-right, bottom-left.
+pts1 = np.float32([
+    [1, 0],
+    [1916, 1],
+    [1919, 1076],
+    [1, 1078],
+])
+
+pts2 = np.float32([
+    [0, 0],
+    [width - 1, 0],
+    [width - 1, height - 1],
+    [0, height - 1],
+])
+
+warp_matrix = cv.getPerspectiveTransform(pts1, pts2)
+
+
+# ==========================================
+# 2. SETTINGS
+# ==========================================
 
 load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-path = os.path.join(BASE_DIR, "images")
+IMAGE_DIR = os.path.join(BASE_DIR, "images")
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
-camera = cv.VideoCapture(0)
+CAMERA_INDEX = 0
+SYNC_DELAY_SECONDS = 0.25
+SYNC_IMAGE_PATH = os.path.join(IMAGE_DIR, "robot_sync_frame.png")
+PICKUP_RECHECK_IMAGE_PATH = os.path.join(IMAGE_DIR, "pickup_recheck_frame.png")
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
-send_command(sock, build_handshake())
+# The key precision fix:
+# EV3 GOTO moves the robot CENTER. It does not move the green grappler point.
+# So for pickup we calculate where the robot center must stop so that the
+# grappler/front point is on the ball.
+DEFAULT_GRAPPLER_OFFSET_DISTANCE = 42.0
+MIN_GRAPPLER_OFFSET_DISTANCE = 20.0
+MAX_GRAPPLER_OFFSET_DISTANCE = 80.0
+
+# Pull the center a little closer than the exact edge position so the ball is
+# slightly inside the claw before closing.
+PICKUP_CAPTURE_OVERLAP = 5.0
+
+# When far away, first go to a point behind the pickup pose, re-read the camera,
+# then do the final approach.
+PICKUP_PRE_APPROACH_DISTANCE = 75.0
+PICKUP_PRE_APPROACH_SKIP_DISTANCE = 25.0
+
+# Small movement and correction thresholds, in warped-map pixels.
+PICKUP_MIN_GOTO_DISTANCE = 4.0
+PICKUP_GRAPPLER_TOLERANCE = 7.0
+PICKUP_TARGET_MARGIN = 8.0
+
+# EV3 claw commands are non-blocking, so give the medium motor time to move.
+CLAW_OPEN_WAIT_SECONDS = 0.45
+PICKUP_SETTLE_SECONDS = 0.20
+FINAL_TURN_SPEED = 15
 
 
-def open_claw(sock):
-    return send_command(sock, build_claw_open())
+# ==========================================
+# 3. CAMERA HELPERS
+# ==========================================
 
+def open_camera(camera_index=CAMERA_INDEX):
+    print("using camera.py from:", __file__)
+    print("Trying to open camera:", camera_index)
 
-def close_claw(sock):
-    return send_command(sock, build_claw_close())
+    camera = cv.VideoCapture(camera_index)
 
-
-def deliver_ball(sock):
-    return send_command(sock, build_claw_deliver())
-
-
-def closest_point(origin, points):
-    if origin is None or not points:
+    if not camera.isOpened():
+        print("Could not open camera index {}".format(camera_index))
         return None
 
-    return min(
-        points,
-        key=lambda p: ((origin[0] - p[0]) ** 2 + (origin[1] - p[1]) ** 2) ** 0.5
+    return camera
+
+
+def close_camera(camera):
+    if camera is not None:
+        camera.release()
+    cv.destroyAllWindows()
+
+
+def warp_frame(frame):
+    return cv.warpPerspective(frame, warp_matrix, (width, height))
+
+
+def read_warped_frame(camera):
+    res, frame = camera.read()
+
+    if not res:
+        print("Could not read camera frame")
+        return None
+
+    return warp_frame(frame)
+
+
+def count_color(matrix, color):
+    return sum(row.count(color) for row in matrix)
+
+
+def capture_color_state(camera, image_path):
+    """Capture a warped frame, save it, and return matrix + robot pose info."""
+    warped_frame = read_warped_frame(camera)
+
+    if warped_frame is None:
+        return None
+
+    cv.imwrite(image_path, warped_frame)
+    print("Saved camera image:", image_path)
+
+    color_matrix = create_matrix(image_path)
+
+    return {
+        "frame": warped_frame,
+        "matrix": color_matrix,
+        "pose": robot_pose_approx(color_matrix),
+        "grappler": grapler_pos_approx(color_matrix, "G"),
+    }
+
+
+def get_robot_pose_from_camera(camera):
+    state = capture_color_state(camera, SYNC_IMAGE_PATH)
+
+    if state is None:
+        return None
+
+    color_matrix = state["matrix"]
+    print(
+        "Robot marker counts: Y={}, P={}, B={}".format(
+            count_color(color_matrix, "Y"),
+            count_color(color_matrix, "P"),
+            count_color(color_matrix, "B"),
+        )
     )
 
+    return state["pose"]
 
-def path_is_valid(path):
-    return path and not isinstance(path, str)
+
+def show_camera_once(camera):
+    warped_frame = read_warped_frame(camera)
+
+    if warped_frame is None:
+        return
+
+    cv.imshow("camera", warped_frame)
+    cv.waitKey(1)
+
+
+# ==========================================
+# 4. GEOMETRY HELPERS
+# ==========================================
+
+def path_is_valid(robot_path):
+    return robot_path and not isinstance(robot_path, str)
 
 
 def point_distance(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def truncate_path_before_target(path, stop_distance=PICKUP_STOP_DISTANCE):
-    """Return a path that stops before the final target/ball center."""
-    if not path_is_valid(path):
-        print("Invalid path:", path)
+def row_col_to_xy(point):
+    """Convert a matrix point (row, col) to EV3/map coordinates (x, y)."""
+    return float(point[1]), float(point[0])
+
+
+def xy_to_row_col(x, y):
+    """Convert EV3/map coordinates (x, y) to a matrix point (row, col)."""
+    return int(round(y)), int(round(x))
+
+
+def pose_center_xy(pose):
+    """robot_pose_approx() returns (center_col, center_row, heading_degrees)."""
+    return float(pose[0]), float(pose[1])
+
+
+def normalize_heading(angle):
+    return float(angle) % 360.0
+
+
+def normalize_turn(angle):
+    return (float(angle) + 180.0) % 360.0 - 180.0
+
+
+def heading_to_unit(heading_degrees):
+    radians = math.radians(heading_degrees)
+    return math.cos(radians), math.sin(radians)
+
+
+def clamp_xy_to_map(x, y, margin=PICKUP_TARGET_MARGIN):
+    x = max(margin, min(width - 1 - margin, float(x)))
+    y = max(margin, min(height - 1 - margin, float(y)))
+    return x, y
+
+
+def closest_point(origin, points):
+    if origin is None or not points:
+        return None
+    return min(points, key=lambda point: point_distance(origin, point))
+
+
+def choose_pickup_ball(color_matrix, ball_color, reference_point, target_hint=None):
+    balls = ball_pos_approx_shape(color_matrix, ball_color)
+
+    if not balls:
+        print("No {} balls visible".format(ball_color))
         return None
 
-    if len(path) < 2:
-        return path
+    if target_hint is not None:
+        chosen = closest_point(target_hint, balls)
+    else:
+        chosen = closest_point(reference_point, balls)
 
-    distance_from_target = 0.0
+    print("Chosen {} ball: {} from candidates {}".format(ball_color, chosen, balls))
+    return chosen
 
-    for index in range(len(path) - 1, 0, -1):
-        distance_from_target += point_distance(path[index], path[index - 1])
 
-        if distance_from_target >= stop_distance:
-            pickup_path = path[:index]
+def estimate_grappler_offset_distance(pose, grappler_point):
+    """Estimate center-to-grappler distance from the current camera frame."""
+    if pose is not None and grappler_point is not None:
+        center_x, center_y = pose_center_xy(pose)
+        grappler_x, grappler_y = row_col_to_xy(grappler_point)
+        distance = math.hypot(grappler_x - center_x, grappler_y - center_y)
 
-            if len(pickup_path) == 0:
-                pickup_path = [path[0]]
+        if MIN_GRAPPLER_OFFSET_DISTANCE <= distance <= MAX_GRAPPLER_OFFSET_DISTANCE:
+            print("Live grappler offset distance: {:.1f}".format(distance))
+            return distance
 
+        print(
+            "Ignoring unlikely grappler offset {:.1f}; using default {:.1f}".format(
+                distance,
+                DEFAULT_GRAPPLER_OFFSET_DISTANCE,
+            )
+        )
+
+    return DEFAULT_GRAPPLER_OFFSET_DISTANCE
+
+
+def compute_center_target_for_ball(pose, ball_point, grappler_point=None, extra_standoff=0.0):
+    """
+    Return the robot-center target that places the grappler on the ball.
+
+    ball_point is (row, col). The returned target is also (row, col), but it is
+    the target for the robot CENTER, because build_goto(x, y) drives the center.
+    """
+    if pose is None or ball_point is None:
+        return None
+
+    center_x, center_y = pose_center_xy(pose)
+    ball_x, ball_y = row_col_to_xy(ball_point)
+
+    to_ball_x = ball_x - center_x
+    to_ball_y = ball_y - center_y
+    distance_to_ball = math.hypot(to_ball_x, to_ball_y)
+
+    if distance_to_ball < 1.0:
+        unit_x, unit_y = heading_to_unit(pose[2])
+    else:
+        unit_x = to_ball_x / distance_to_ball
+        unit_y = to_ball_y / distance_to_ball
+
+    offset_distance = estimate_grappler_offset_distance(pose, grappler_point)
+    effective_offset = max(0.0, offset_distance - PICKUP_CAPTURE_OVERLAP)
+    desired_ball_to_center = effective_offset + float(extra_standoff)
+
+    if extra_standoff > 0.0:
+        # Do not command a staging move behind the robot when already close.
+        if distance_to_ball <= desired_ball_to_center + PICKUP_PRE_APPROACH_SKIP_DISTANCE:
             print(
-                "Pickup approach: ball={}, stop_point={}, stop_distance={:.1f}".format(
-                    path[-1],
-                    pickup_path[-1],
-                    distance_from_target,
+                "Already close enough for staging: distance_to_ball={:.1f}, "
+                "wanted_staging_distance={:.1f}".format(
+                    distance_to_ball,
+                    desired_ball_to_center,
                 )
             )
-            return pickup_path
+            desired_ball_to_center = distance_to_ball
+    else:
+        # Keep the final pickup movement forward and small instead of overshooting.
+        desired_ball_to_center = min(
+            desired_ball_to_center,
+            max(0.0, distance_to_ball - PICKUP_MIN_GOTO_DISTANCE),
+        )
 
-    print("Pickup approach: path shorter than stop distance; staying at start {}".format(path[0]))
-    return [path[0]]
+    target_x = ball_x - desired_ball_to_center * unit_x
+    target_y = ball_y - desired_ball_to_center * unit_y
+    target_x, target_y = clamp_xy_to_map(target_x, target_y)
+
+    target_row_col = xy_to_row_col(target_x, target_y)
+    target_heading = normalize_heading(math.degrees(math.atan2(unit_y, unit_x)))
+
+    print(
+        "Pickup geometry: center=({:.1f}, {:.1f}), ball=({:.1f}, {:.1f}), "
+        "distance_to_ball={:.1f}, desired_ball_to_center={:.1f}, "
+        "target_center=({}, {}), target_heading={:.1f}".format(
+            center_x,
+            center_y,
+            ball_x,
+            ball_y,
+            distance_to_ball,
+            desired_ball_to_center,
+            target_row_col[1],
+            target_row_col[0],
+            target_heading,
+        )
+    )
+
+    return target_row_col, target_heading
 
 
-def follow_path(sock, path, step_size=40):
-    if not path_is_valid(path):
-        print("Invalid path:", path)
+# ==========================================
+# 5. EV3 COMMAND HELPERS
+# ==========================================
+
+def send_pose_sync(sock, pose):
+    if pose is None:
+        print("Cannot sync: robot pose is None")
         return False
 
-    waypoints = path[::step_size]
+    x, y, heading = pose
+    x = int(round(x))
+    y = int(round(y))
+    heading_tenths = int(round(normalize_heading(heading) * 10))
 
-    if waypoints[-1] != path[-1]:
-        waypoints.append(path[-1])
+    print("Camera sync: x={}, y={}, heading={:.1f}".format(x, y, heading))
+    return send_command(sock, build_possync(x, y, heading_tenths))
+
+
+def sync_robot_from_camera(sock, camera):
+    pose = get_robot_pose_from_camera(camera)
+
+    if pose is None:
+        print("Could not detect robot pose from camera")
+        return False
+
+    return send_pose_sync(sock, pose)
+
+
+def goto_center_target(sock, pose, target_row_col):
+    """Sync EV3 to camera pose, then drive robot center to target_row_col."""
+    if pose is None or target_row_col is None:
+        return False
+
+    center_x, center_y = pose_center_xy(pose)
+    target_x = int(round(target_row_col[1]))
+    target_y = int(round(target_row_col[0]))
+    drive_distance = math.hypot(target_x - center_x, target_y - center_y)
+
+    if not send_pose_sync(sock, pose):
+        return False
+
+    if drive_distance < PICKUP_MIN_GOTO_DISTANCE:
+        print("Skipping tiny GOTO distance {:.1f}".format(drive_distance))
+        return True
+
+    print(
+        "Sending CENTER GOTO x={}, y={} (distance {:.1f})".format(
+            target_x,
+            target_y,
+            drive_distance,
+        )
+    )
+    return send_command(sock, build_goto(target_x, target_y))
+
+
+def turn_to_face_ball(sock, pose, ball_point):
+    if pose is None or ball_point is None:
+        return False
+
+    center_x, center_y = pose_center_xy(pose)
+    ball_x, ball_y = row_col_to_xy(ball_point)
+    desired_heading = normalize_heading(math.degrees(math.atan2(ball_y - center_y, ball_x - center_x)))
+    turn_angle = normalize_turn(desired_heading - pose[2])
+
+    print(
+        "Final heading check: current={:.1f}, desired={:.1f}, turn={:.1f}".format(
+            pose[2],
+            desired_heading,
+            turn_angle,
+        )
+    )
+
+    if abs(turn_angle) < 3.0:
+        return True
+
+    return send_command(sock, build_turn(int(round(turn_angle)), FINAL_TURN_SPEED))
+
+
+def goto_then_sync(sock, camera, row, col):
+    """Compatibility helper used by robot_console.py/debugging."""
+    x = int(round(col))
+    y = int(round(row))
+
+    print("Sending GOTO x={}, y={}".format(x, y))
+
+    if not send_command(sock, build_goto(x, y)):
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+    return sync_robot_from_camera(sock, camera)
+
+
+def follow_path_with_camera_sync(sock, camera, robot_path, step_size=10):
+    """Compatibility helper for non-pickup path debugging."""
+    if not path_is_valid(robot_path):
+        print("Invalid path:", robot_path)
+        return False
+
+    if not sync_robot_from_camera(sock, camera):
+        return False
+
+    waypoints = robot_path[::step_size]
+
+    if waypoints[-1] != robot_path[-1]:
+        waypoints.append(robot_path[-1])
 
     for row, col in waypoints:
-        x = int(col)
-        y = int(row)
-
-        print("Goto:", x, y)
-
-        if not send_command(sock, build_goto(x, y)):
+        if not goto_then_sync(sock, camera, row, col):
             return False
-
-        time.sleep(0.2)
 
     return True
 
 
-def follow_pickup_path_and_close(sock, path):
-    pickup_path = truncate_path_before_target(path, PICKUP_STOP_DISTANCE)
+# ==========================================
+# 6. PRECISE BALL PICKUP
+# ==========================================
 
-    if not path_is_valid(pickup_path):
+def precise_pickup_step(sock, camera, ball_color, target_hint=None, extra_standoff=0.0):
+    """Re-read camera, choose a ball, compute robot-center target, and drive."""
+    state = capture_color_state(camera, PICKUP_RECHECK_IMAGE_PATH)
+
+    if state is None:
+        return False, None
+
+    pose = state["pose"]
+    color_matrix = state["matrix"]
+    grappler_point = state["grappler"]
+
+    if pose is None:
+        print("Could not detect robot pose for pickup")
+        return False, None
+
+    reference_point = grappler_point
+    if reference_point is None:
+        center_x, center_y = pose_center_xy(pose)
+        reference_point = xy_to_row_col(center_x, center_y)
+
+    ball_point = choose_pickup_ball(color_matrix, ball_color, reference_point, target_hint)
+
+    if ball_point is None:
+        return False, None
+
+    target_info = compute_center_target_for_ball(
+        pose,
+        ball_point,
+        grappler_point,
+        extra_standoff=extra_standoff,
+    )
+
+    if target_info is None:
+        return False, ball_point
+
+    target_row_col, _target_heading = target_info
+
+    if not goto_center_target(sock, pose, target_row_col):
+        return False, ball_point
+
+    return True, ball_point
+
+
+def correct_if_grappler_still_misaligned(sock, camera, ball_color, target_hint=None):
+    """Make one final camera-based correction before closing the claw."""
+    state = capture_color_state(camera, PICKUP_RECHECK_IMAGE_PATH)
+
+    if state is None:
         return False
 
-    if not follow_path(sock, pickup_path, step_size=PICKUP_WAYPOINT_STEP_SIZE):
+    pose = state["pose"]
+    color_matrix = state["matrix"]
+    grappler_point = state["grappler"]
+
+    if pose is None:
+        print("Could not detect robot pose for final correction")
         return False
 
-    # Force the drive motors to brake before the claw closes.
+    reference_point = grappler_point
+    if reference_point is None:
+        center_x, center_y = pose_center_xy(pose)
+        reference_point = xy_to_row_col(center_x, center_y)
+
+    ball_point = choose_pickup_ball(color_matrix, ball_color, reference_point, target_hint)
+
+    if ball_point is None:
+        # The claw may hide the ball. In that case, close from the current pose
+        # instead of failing after a likely-successful approach.
+        print("Ball not visible in final correction frame; closing from current pose")
+        return turn_to_face_ball(sock, pose, target_hint) if target_hint else True
+
+    if grappler_point is not None:
+        visible_error = point_distance(grappler_point, ball_point)
+        print("Visible grappler-to-ball error: {:.1f}".format(visible_error))
+
+        if visible_error <= PICKUP_GRAPPLER_TOLERANCE:
+            return turn_to_face_ball(sock, pose, ball_point)
+
+    target_info = compute_center_target_for_ball(
+        pose,
+        ball_point,
+        grappler_point,
+        extra_standoff=0.0,
+    )
+
+    if target_info is None:
+        return False
+
+    target_row_col, _target_heading = target_info
+
+    if not goto_center_target(sock, pose, target_row_col):
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+    return True
+
+
+def approach_ball_and_close_claw(sock, camera, ball_color, target_hint=None):
+    """Open the claw, approach precisely, correct once, then close."""
+    print("Opening claw before pickup approach")
+    if not send_command(sock, build_claw_open()):
+        return False
+
+    time.sleep(CLAW_OPEN_WAIT_SECONDS)
+
+    print("Moving to pickup staging pose")
+    ok, updated_target = precise_pickup_step(
+        sock,
+        camera,
+        ball_color,
+        target_hint=target_hint,
+        extra_standoff=PICKUP_PRE_APPROACH_DISTANCE,
+    )
+
+    if not ok:
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+
+    print("Making final pickup approach")
+    ok, updated_target = precise_pickup_step(
+        sock,
+        camera,
+        ball_color,
+        target_hint=updated_target,
+        extra_standoff=0.0,
+    )
+
+    if not ok:
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+
+    if not correct_if_grappler_still_misaligned(
+        sock,
+        camera,
+        ball_color,
+        target_hint=updated_target,
+    ):
+        return False
+
     print("Stopping before closing claw")
     if not send_command(sock, build_setspeed(0, 0)):
         return False
 
     time.sleep(PICKUP_SETTLE_SECONDS)
 
-    print("Closing grapler")
-    return close_claw(sock)
+    print("Closing claw at corrected pickup pose")
+    return send_command(sock, build_claw_close())
 
 
-def take_picture_and_matrix(camera, count):
-    res, frame = camera.read()
+# ==========================================
+# 7. MAIN AUTONOMOUS LOOP
+# ==========================================
 
-    if not res:
-        return None, None
+def run_autonomous_camera():
+    allocated_time = 1
+    start_delay = 2
+    begin_time = time.time()
+    last_picture_time = time.time()
 
-    im_ = f"{count}.png"
-    full_path = os.path.join(path, im_)
-    cv.imwrite(full_path, frame)
+    camera = open_camera(CAMERA_INDEX)
+    if camera is None:
+        return
 
-    color_matrix = create_matrix(full_path)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    return frame, color_matrix
+    try:
+        sock.connect((HOST, PORT))
+        send_command(sock, build_handshake())
 
+        count = 0
+        path_executed = False
 
-def collect_ball(color_matrix, sock, camera, count, target, goal):
-    grapler_point = grapler_pos_approx(color_matrix, "G")
+        while camera.isOpened():
+            res, frame = camera.read()
 
-    if grapler_point is None:
-        print("Could not find grapler")
-        return False, count
+            if not res:
+                continue
 
-    if not open_claw(sock):
-        return False, count
+            warped_frame = warp_frame(frame)
 
-    path_to_ball = A_star(color_matrix, grapler_point, target)
+            if time.time() - begin_time >= start_delay:
+                if time.time() - last_picture_time >= allocated_time:
+                    last_picture_time = time.time()
 
-    if not follow_pickup_path_and_close(sock, path_to_ball):
-        return False, count
+                    image_name = "{}.png".format(count)
+                    full_path = os.path.join(IMAGE_DIR, image_name)
+                    cv.imwrite(full_path, warped_frame)
+                    count += 1
+                    print("Vi tager et billede")
 
-    time.sleep(0.5)  # give robot/claw time to settle
+                    color_matrix = create_matrix(full_path)
+                    white_list = ball_pos_approx_shape(color_matrix, "W")
+                    grappler_point = grapler_pos_approx(color_matrix, "G")
+                    print("grappler_point", grappler_point)
 
-    # Take new image after pickup
-    new_frame, new_color_matrix = take_picture_and_matrix(camera, count)
-    count += 1
+                    if grappler_point is None:
+                        print("No grapler detected; cannot collect ball")
+                        continue
 
-    if new_color_matrix is None:
-        print("Could not take new image after pickup")
-        return False, count
+                    if not white_list:
+                        print("No white balls detected")
+                        continue
 
-    new_grapler_point = grapler_pos_approx(new_color_matrix, "G")
+                    # Choose the nearest white ball to the grappler. This keeps
+                    # the old selection behavior, but pickup itself now uses
+                    # robot-center geometry instead of a grappler path as GOTO.
+                    min_list = []
+                    for item in white_list:
+                        value = get_h_list(grappler_point[0], grappler_point[1], item[0], item[1])
+                        min_list.append(value)
 
-    if new_grapler_point is None:
-        print("Could not re-detect grapler after pickup")
-        return False, count
+                    print("minlist", min_list)
+                    paired = list(zip(min_list, white_list))
+                    paired.sort()
+                    white_list = [item for _, item in paired]
+                    print("white_list", white_list)
 
-    # Re-detect goal too, in case camera/image changed
-    new_goals = goals_pos_approx(new_color_matrix, "PK", "C")
+                    if not path_executed:
+                        path_executed = approach_ball_and_close_claw(
+                            sock,
+                            camera,
+                            "W",
+                            target_hint=white_list[0],
+                        )
 
-    if new_goals is None:
-        print("Could not re-detect goals after pickup")
-        return False, count
+                    robot_position = robot_pos(color_matrix)
+                    print("robot_position", robot_position)
 
-    Goal_A, Goal_B = new_goals
+                    goals = goals_pos_approx(color_matrix, "PK", "C")
+                    if goals is not None:
+                        goal_a, goal_b = goals
+                        print("Goal_A:", goal_a)
+                        print("Goal_B:", goal_b)
+                    else:
+                        print("Goals not detected")
 
-    # Keep using the same chosen goal type
-    updated_goal = goal
+                    orangeball_pos = ball_pos_approx_shape(color_matrix, "O")
+                    print("orangeball_pos:", orangeball_pos)
 
-    print("New grapler position:", new_grapler_point)
-    print("Driving from new grapler position to goal:", updated_goal)
+            cv.imshow("camera", warped_frame)
 
-    path_to_goal = A_star(new_color_matrix, new_grapler_point, updated_goal)
-
-    if not follow_path(sock, path_to_goal):
-        return False, count
-
-    print("Shooting")
-    if not deliver_ball(sock):
-        return False, count
-
-    return True, count
-
-
-count = 0
-BeginTime = time.time()
-startTime = time.time()
-
-try:
-    while camera.isOpened():
-        res, preview_frame = camera.read()
-
-        if res:
-            cv.imshow("camera", preview_frame)
-
-        if time.time() - BeginTime < STARTTIME:
             if cv.waitKey(1) & 0xFF == ord("q"):
                 break
-            continue
 
-        if time.time() - startTime >= allocatedTime:
-            startTime = time.time()
+    finally:
+        sock.close()
+        close_camera(camera)
 
-            frame, color_matrix = take_picture_and_matrix(camera, count)
-            count += 1
 
-            if color_matrix is None:
-                continue
-
-            print("Image taken")
-
-            grapler_point = grapler_pos_approx(color_matrix, "G")
-
-            if grapler_point is None:
-                print("No grapler detected")
-                continue
-
-            white_balls = ball_pos_approx_shape(color_matrix, "W")
-            orange_balls = ball_pos_approx_shape(color_matrix, "O")
-
-            goals = goals_pos_approx(color_matrix, "PK", "C")
-
-            if goals is None:
-                print("Could not find goals")
-                continue
-
-            Goal_A, Goal_B = goals
-
-            # Priority: collect orange first if visible
-            if orange_balls:
-                target = closest_point(grapler_point, orange_balls)
-                goal = Goal_A
-                print("Collecting orange ball:", target)
-
-            elif white_balls:
-                target = closest_point(grapler_point, white_balls)
-                goal = Goal_B
-                print("Collecting white ball:", target)
-
-            else:
-                print("No balls left")
-                send_command(sock, build_finish())
-                break
-
-            success, count = collect_ball(color_matrix, sock, camera, count, target, goal)
-
-            if not success:
-                print("Collection failed, trying again on next frame")
-
-        if cv.waitKey(1) & 0xFF == ord("q"):
-            break
-
-finally:
-    sock.close()
-    camera.release()
-    cv.destroyAllWindows()
+if __name__ == "__main__":
+    run_autonomous_camera()
