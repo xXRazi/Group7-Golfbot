@@ -83,14 +83,22 @@ PICKUP_SETTLE_SECONDS = 0.15
 # change a lot after the robot turns.
 PICKUP_PREAPPROACH_DISTANCE = 55.0
 
+# The old coarse pre-approach can cause long left/right turns when the camera
+# pose or the green grappler point is noisy. The final servo is now accurate
+# enough to approach the ball by itself, so keep this disabled for ball pickup.
+USE_COARSE_PICKUP_PREAPPROACH = False
+
 # Final camera-servo tuning.
 #
 # Important: PICKUP_STOP_DISTANCE above is used for the coarse A* approach, not
 # for the last few centimeters of pickup. In v6 the final close distance was
 # too large, so the robot could stop with the ball still just outside the claw.
 # v7 drives closer, then performs one small forward "scoop" before closing.
-PICKUP_SERVO_MAX_ITERATIONS = 18
-PICKUP_SERVO_MAX_FORWARD_STEP = 14.0
+PICKUP_SERVO_MAX_ITERATIONS = 24
+PICKUP_SERVO_MAX_FORWARD_STEP = 32.0
+PICKUP_SERVO_FAR_FORWARD_STEP = 32.0
+PICKUP_SERVO_MID_FORWARD_STEP = 22.0
+PICKUP_SERVO_NEAR_FORWARD_STEP = 12.0
 PICKUP_SERVO_MIN_FORWARD_STEP = 3.0
 
 # Close when the robot center is roughly this far from the ball. If the robot
@@ -683,6 +691,17 @@ def capture_pickup_scene(camera, ball_color="W"):
     }
 
 
+def pickup_servo_forward_step(center_to_ball):
+    """Use fewer, larger moves far away and smaller moves near the ball."""
+    if center_to_ball > 140.0:
+        return min(PICKUP_SERVO_MAX_FORWARD_STEP, PICKUP_SERVO_FAR_FORWARD_STEP)
+
+    if center_to_ball > 80.0:
+        return min(PICKUP_SERVO_MAX_FORWARD_STEP, PICKUP_SERVO_MID_FORWARD_STEP)
+
+    return min(PICKUP_SERVO_MAX_FORWARD_STEP, PICKUP_SERVO_NEAR_FORWARD_STEP)
+
+
 def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_units):
     """
     Move the robot center a short distance toward target_point.
@@ -861,12 +880,20 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             print("Pickup servo: center is close enough; doing final scoop before claw close")
             return final_scoop_forward_before_close(sock, camera, robot_pose)
 
+        max_step = pickup_servo_forward_step(center_to_ball)
         forward_distance = center_to_ball - PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE
-        forward_distance = min(forward_distance, PICKUP_SERVO_MAX_FORWARD_STEP)
+        forward_distance = min(forward_distance, max_step)
 
         if forward_distance < PICKUP_SERVO_MIN_FORWARD_STEP:
             print("Pickup servo: remaining center move is tiny; closing")
             return True
+
+        print(
+            "Pickup servo step choice: max_step={:.1f}, requested_forward={:.1f}".format(
+                max_step,
+                forward_distance,
+            )
+        )
 
         if not drive_toward_map_point(sock, camera, robot_pose, ball_point, forward_distance):
             return False
@@ -995,31 +1022,41 @@ def approach_ball_and_close_claw(
     grappler_to_ball_path,
     current_grappler_point=None,
     current_robot_pose=None,
+    open_claw=True,
 ):
     """
     Open the claw, drive to a stable pre-approach point, then use fresh camera
     feedback for the final alignment and forward pickup motion.
     """
-    pickup_plan = build_center_pickup_plan(
-        color_matrix,
-        grappler_to_ball_path,
-        current_robot_pose,
-        current_grappler_point,
-    )
-
     center_pickup_path = None
 
-    if pickup_plan is not None and path_is_valid(pickup_plan["center_path"]):
-        center_pickup_path = pickup_plan["center_path"]
-    else:
-        print(
-            "Pickup pre-approach plan failed; opening claw and using "
-            "camera-servo pickup from the current position"
+    if USE_COARSE_PICKUP_PREAPPROACH:
+        pickup_plan = build_center_pickup_plan(
+            color_matrix,
+            grappler_to_ball_path,
+            current_robot_pose,
+            current_grappler_point,
         )
 
-    print("Opening claw before pickup approach")
-    if not send_command(sock, build_claw_open()):
-        return False
+        if pickup_plan is not None and path_is_valid(pickup_plan["center_path"]):
+            center_pickup_path = pickup_plan["center_path"]
+        else:
+            print(
+                "Pickup pre-approach plan failed; opening claw and using "
+                "camera-servo pickup from the current position"
+            )
+    else:
+        print(
+            "Skipping coarse pickup pre-approach; using camera-servo approach "
+            "from the current position"
+        )
+
+    if open_claw:
+        print("Opening claw before pickup approach")
+        if not send_command(sock, build_claw_open()):
+            return False
+    else:
+        print("Continuing pickup without reopening claw")
 
     if center_pickup_path is not None:
         if not follow_path_with_camera_sync(
@@ -1071,6 +1108,7 @@ def run_autonomous_camera():
         res, frame = camera.read()
         count = 0
         path_executed = False
+        pickup_started = False
 
         while camera.isOpened():
             res, frame = camera.read()
@@ -1132,14 +1170,15 @@ def run_autonomous_camera():
                     #robot_path = A_star(color_matrix, white_list[0], white_list[-1])
 
                     if not path_executed:
-                        # Mark the pickup sequence as executed as soon as the
-                        # attempt starts. Previously this flag only became True
-                        # if every final camera check succeeded. If a final
-                        # detection missed the ball, the outer camera loop would
-                        # immediately call approach_ball_and_close_claw() again,
-                        # which sends another CLAW_OPEN command. That is the
-                        # "it opened again instead of closing" behaviour.
-                        path_executed = True
+                        # Keep retrying the pickup until the claw actually closes.
+                        # Older versions set path_executed=True as soon as the
+                        # attempt started. If the final servo loop hit its max
+                        # iterations while still approaching the ball, the main
+                        # loop would keep taking pictures but never send another
+                        # movement command. That looked like the robot had frozen.
+                        #
+                        # We still avoid the old "reopen the claw on every retry"
+                        # bug by opening the claw only for the first attempt.
                         pickup_success = approach_ball_and_close_claw(
                             sock,
                             camera,
@@ -1147,11 +1186,17 @@ def run_autonomous_camera():
                             robot_path,
                             current_grappler_point=grapler_point,
                             current_robot_pose=current_robot_pose,
+                            open_claw=not pickup_started,
                         )
 
-                        if not pickup_success:
+                        pickup_started = True
+
+                        if pickup_success:
+                            path_executed = True
+                            pickup_started = False
+                        else:
                             print(
-                                "Pickup attempt did not finish cleanly; not retrying automatically because that would re-open the claw"
+                                "Pickup attempt did not finish cleanly; will retry from the current position without reopening the claw"
                             )
 
                     robot_position = robot_pos(color_matrix)
