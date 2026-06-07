@@ -2,16 +2,35 @@ import cv2 as cv
 import os
 import time
 import socket
+import math
 
 from dotenv import load_dotenv
 from Imagesplitter import create_matrix
 from id_color import ball_pos_approx_shape, grapler_pos_approx, goals_pos_approx
 from collection_algorithm import A_star
-from com_protocol import HOST, PORT, send_command, build_handshake, build_goto, build_finish
-from scoring_and_corner import open_claw, close_claw, deliver_ball
+from com_protocol import (
+    HOST,
+    PORT,
+    send_command,
+    build_handshake,
+    build_goto,
+    build_finish,
+    build_setspeed,
+    build_claw_open,
+    build_claw_close,
+    build_claw_deliver,
+)
 
 allocatedTime = 1
 STARTTIME = 2
+
+# Stop this many warped-image/map units before the ball center.
+# 35 units is about 9 cm with CM_PER_MAP_UNIT=0.26 on the EV3.
+PICKUP_STOP_DISTANCE = 35
+
+# Smaller pickup waypoints prevent one long final movement from pushing the ball.
+PICKUP_WAYPOINT_STEP_SIZE = 15
+PICKUP_SETTLE_SECONDS = 0.15
 
 load_dotenv()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +43,18 @@ sock.connect((HOST, PORT))
 send_command(sock, build_handshake())
 
 
+def open_claw(sock):
+    return send_command(sock, build_claw_open())
+
+
+def close_claw(sock):
+    return send_command(sock, build_claw_close())
+
+
+def deliver_ball(sock):
+    return send_command(sock, build_claw_deliver())
+
+
 def closest_point(origin, points):
     if origin is None or not points:
         return None
@@ -34,8 +65,49 @@ def closest_point(origin, points):
     )
 
 
+def path_is_valid(path):
+    return path and not isinstance(path, str)
+
+
+def point_distance(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def truncate_path_before_target(path, stop_distance=PICKUP_STOP_DISTANCE):
+    """Return a path that stops before the final target/ball center."""
+    if not path_is_valid(path):
+        print("Invalid path:", path)
+        return None
+
+    if len(path) < 2:
+        return path
+
+    distance_from_target = 0.0
+
+    for index in range(len(path) - 1, 0, -1):
+        distance_from_target += point_distance(path[index], path[index - 1])
+
+        if distance_from_target >= stop_distance:
+            pickup_path = path[:index]
+
+            if len(pickup_path) == 0:
+                pickup_path = [path[0]]
+
+            print(
+                "Pickup approach: ball={}, stop_point={}, stop_distance={:.1f}".format(
+                    path[-1],
+                    pickup_path[-1],
+                    distance_from_target,
+                )
+            )
+            return pickup_path
+
+    print("Pickup approach: path shorter than stop distance; staying at start {}".format(path[0]))
+    return [path[0]]
+
+
 def follow_path(sock, path, step_size=40):
-    if not path or isinstance(path, str):
+    if not path_is_valid(path):
         print("Invalid path:", path)
         return False
 
@@ -56,6 +128,26 @@ def follow_path(sock, path, step_size=40):
         time.sleep(0.2)
 
     return True
+
+
+def follow_pickup_path_and_close(sock, path):
+    pickup_path = truncate_path_before_target(path, PICKUP_STOP_DISTANCE)
+
+    if not path_is_valid(pickup_path):
+        return False
+
+    if not follow_path(sock, pickup_path, step_size=PICKUP_WAYPOINT_STEP_SIZE):
+        return False
+
+    # Force the drive motors to brake before the claw closes.
+    print("Stopping before closing claw")
+    if not send_command(sock, build_setspeed(0, 0)):
+        return False
+
+    time.sleep(PICKUP_SETTLE_SECONDS)
+
+    print("Closing grapler")
+    return close_claw(sock)
 
 
 def take_picture_and_matrix(camera, count):
@@ -80,15 +172,13 @@ def collect_ball(color_matrix, sock, camera, count, target, goal):
         print("Could not find grapler")
         return False, count
 
-    open_claw()
+    if not open_claw(sock):
+        return False, count
 
     path_to_ball = A_star(color_matrix, grapler_point, target)
 
-    if not follow_path(sock, path_to_ball):
+    if not follow_pickup_path_and_close(sock, path_to_ball):
         return False, count
-
-    print("closing grapler")
-    close_claw()
 
     time.sleep(0.5)  # give robot/claw time to settle
 
@@ -127,7 +217,8 @@ def collect_ball(color_matrix, sock, camera, count, target, goal):
         return False, count
 
     print("Shooting")
-    deliver_ball()
+    if not deliver_ball(sock):
+        return False, count
 
     return True, count
 

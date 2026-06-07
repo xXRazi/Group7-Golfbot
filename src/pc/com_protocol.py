@@ -10,12 +10,19 @@ PORT = 5000
 ERROR = 0x0
 CALIBRATE = 0x1
 SENDMAP = 0x2
+CLAW = 0x9
 HANDSHAKE = 0xA
 GOTO = 0xB
 POSSYNC = 0xC
 TURN = 0xD
 SETSPEED = 0xE
 FINISH = 0xF
+
+CLAW_CLOSE = 0x0
+CLAW_OPEN = 0x1
+CLAW_STOP = 0x2
+CLAW_DELIVER = 0x3
+CLAW_CORNER = 0x4
 
 
 def encode_signed_byte(value):
@@ -116,12 +123,18 @@ def build_goto(x, y):
     return struct.pack(">Bii", GOTO, x, y)
 
 
-def build_possync(x, y, heading_tenths):
+def build_possync(x, y, heading_tenths=0):
     """
     POSSYNC packet:
     [CMD][X:int32][Y:int32][HEADING:int16]
 
     Total length: 11 bytes.
+
+    heading_tenths means heading * 10.
+    Example:
+      90 degrees  -> 900
+      180 degrees -> 1800
+      -45 degrees -> -450
     """
     x = validate_signed_int(x, "x")
     y = validate_signed_int(y, "y")
@@ -152,6 +165,48 @@ def build_setspeed(left, right):
         encode_signed_byte(left),
         encode_signed_byte(right),
     ])
+
+
+def build_claw(action):
+    """
+    CLAW packet:
+    [CMD][ACTION:uint8]
+
+    Total length: 2 bytes.
+
+    ACTION:
+      0 = close
+      1 = open
+      2 = stop
+      3 = deliver
+      4 = corner pickup
+    """
+    action = validate_unsigned_byte(action, "action")
+
+    if action not in (CLAW_CLOSE, CLAW_OPEN, CLAW_STOP, CLAW_DELIVER, CLAW_CORNER):
+        raise ValueError("claw action must be 0, 1, 2, 3, or 4")
+
+    return bytes([CLAW, action])
+
+
+def build_claw_open():
+    return build_claw(CLAW_OPEN)
+
+
+def build_claw_close():
+    return build_claw(CLAW_CLOSE)
+
+
+def build_claw_stop():
+    return build_claw(CLAW_STOP)
+
+
+def build_claw_deliver():
+    return build_claw(CLAW_DELIVER)
+
+
+def build_claw_corner():
+    return build_claw(CLAW_CORNER)
 
 
 def build_sendmap(rows, cols, cells):
@@ -206,9 +261,19 @@ def print_help():
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  goto X Y")
     print("  possync X Y")
-    print("  possync X Y HEADING_TENTHS  heading is accepted but ignored")
+    print("  possync X Y HEADING_TENTHS")
     print("  turn ANGLE SPEED")
     print("  setspeed LEFT RIGHT")
+    print("  claw open")
+    print("  claw close")
+    print("  claw stop")
+    print("  claw deliver")
+    print("  claw corner")
+    print("  open_claw")
+    print("  close_claw")
+    print("  stop_claw")
+    print("  deliver_ball")
+    print("  corner_ball")
     print("  sendmap ROWS COLS CELL1 CELL2 ...")
     print("  sendmap_fill ROWS COLS VALUE")
     print("  finish")
@@ -217,12 +282,12 @@ def print_help():
     print()
     print("Notes:")
     print("  goto uses signed 32-bit x/y")
-    print("  possync sends only x/y to match the current EV3 protocol")
-    print("  possync packet length is 9 bytes, not 11")
-    print("  heading is not sent unless the EV3 protocol is updated too")
+    print("  possync uses signed 32-bit x/y and signed 16-bit heading_tenths")
+    print("  possync packet length is 11 bytes")
     print("  turn angle uses signed 16-bit integer")
     print("  turn speed uses signed byte: -128..127")
     print("  setspeed/calibrate use signed bytes: -128..127")
+    print("  claw action is sent as: 0=close, 1=open, 2=stop, 3=deliver, 4=corner pickup")
     print("  sendmap rows/cols use unsigned 16-bit integers")
     print("  sendmap cell values are bytes: 0..255")
     print()
@@ -278,8 +343,12 @@ def interactive_loop(sock, host, port):
                 x = int(parts[1])
                 y = int(parts[2])
 
-                # Optional heading is accepted for convenience but ignored.
-                packet = build_possync(x, y)
+                if len(parts) == 4:
+                    heading_tenths = int(parts[3])
+                else:
+                    heading_tenths = 0
+
+                packet = build_possync(x, y, heading_tenths)
 
             elif cmd == "turn":
                 if len(parts) != 3:
@@ -300,6 +369,50 @@ def interactive_loop(sock, host, port):
                 right = int(parts[2])
 
                 packet = build_setspeed(left, right)
+
+            elif cmd == "claw":
+                if len(parts) != 2:
+                    print("Usage: claw open")
+                    print("   or: claw close")
+                    print("   or: claw stop")
+                    print("   or: claw deliver")
+                    print("   or: claw corner")
+                    continue
+
+                action = parts[1].lower()
+
+                if action == "open":
+                    packet = build_claw_open()
+                elif action == "close":
+                    packet = build_claw_close()
+                elif action == "stop":
+                    packet = build_claw_stop()
+                elif action == "deliver":
+                    packet = build_claw_deliver()
+                elif action in ("corner", "corner_ball", "pickup_corner"):
+                    packet = build_claw_corner()
+                else:
+                    print("Usage: claw open")
+                    print("   or: claw close")
+                    print("   or: claw stop")
+                    print("   or: claw deliver")
+                    print("   or: claw corner")
+                    continue
+
+            elif cmd == "open_claw":
+                packet = build_claw_open()
+
+            elif cmd == "close_claw":
+                packet = build_claw_close()
+
+            elif cmd == "stop_claw":
+                packet = build_claw_stop()
+
+            elif cmd == "deliver_ball":
+                packet = build_claw_deliver()
+
+            elif cmd == "corner_ball":
+                packet = build_claw_corner()
 
             elif cmd == "sendmap":
                 if len(parts) < 4:

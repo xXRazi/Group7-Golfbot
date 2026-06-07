@@ -21,6 +21,11 @@ from com_protocol import (
     build_possync,
     build_setspeed,
     build_turn,
+    build_claw_open,
+    build_claw_close,
+    build_claw_stop,
+    build_claw_deliver,
+    build_claw_corner,
     send_command,
 )
 
@@ -67,6 +72,11 @@ def print_help():
     print("  turn ANGLE SPEED")
     print("  setspeed LEFT RIGHT")
     print("  stop")
+    print("  claw open")
+    print("  claw close")
+    print("  claw stop")
+    print("  claw deliver")
+    print("  claw corner")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  handshake")
     print("  preview               show one warped camera frame")
@@ -159,6 +169,38 @@ def interactive_loop(sock, camera):
 
             elif cmd == "stop":
                 if not send_command(sock, build_setspeed(0, 0)):
+                    break
+
+            elif cmd == "claw":
+                if len(parts) != 2:
+                    print("Usage: claw open")
+                    print("   or: claw close")
+                    print("   or: claw stop")
+                    print("   or: claw deliver")
+                    print("   or: claw corner")
+                    continue
+
+                action = parts[1].lower()
+
+                if action == "open":
+                    packet = build_claw_open()
+                elif action == "close":
+                    packet = build_claw_close()
+                elif action == "stop":
+                    packet = build_claw_stop()
+                elif action == "deliver":
+                    packet = build_claw_deliver()
+                elif action in ("corner", "corner_ball", "pickup_corner"):
+                    packet = build_claw_corner()
+                else:
+                    print("Usage: claw open")
+                    print("   or: claw close")
+                    print("   or: claw stop")
+                    print("   or: claw deliver")
+                    print("   or: claw corner")
+                    continue
+
+                if not send_command(sock, packet):
                     break
 
             elif cmd == "calibrate":
