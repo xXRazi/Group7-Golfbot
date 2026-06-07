@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import math
-from ev3dev2.motor import OUTPUT_A, OUTPUT_D, MoveTank, SpeedPercent
+from ev3dev2.motor import OUTPUT_A, OUTPUT_D, OUTPUT_B, MoveTank, SpeedPercent, MediumMotor
 
 
 class MotorController:
@@ -44,8 +44,13 @@ class MotorController:
     TURN_BRAKE = False
     DRIVE_BRAKE = False
 
-    def __init__(self, left_output=OUTPUT_A, right_output=OUTPUT_D):
+    def __init__(self, left_output=OUTPUT_A, right_output=OUTPUT_D, claw_output=OUTPUT_B):
         self.tank = MoveTank(left_output, right_output)
+        try:
+            self.claw = MediumMotor(claw_output)
+        except Exception as e:
+            print(f"Warning: Could not initialize claw motor on {claw_output}: {e}")
+            self.claw = None
 
         self.left_trim = 0.0
         self.right_trim = 0.0
@@ -350,7 +355,28 @@ class MotorController:
         # This avoids small floating point drift after many goto commands.
         self.x = target_x
         self.y = target_y
-        print("POSITION snapped to x={:.2f}, y={:.2f}".format(self.x, self.y))
+
+    def open_claw(self):
+        if self.claw:
+            print("OPEN CLAW")
+            self.claw.on_for_rotations(100, 3.5, block=False)
+
+    def close_claw(self):
+        if self.claw:
+            print("CLOSE CLAW")
+            self.claw.on_for_rotations(-100, 3.5)
+
+    def deliver_ball(self):
+        print("DELIVER BALL")
+        self.open_claw()
+
+        # Drive backward, then forward
+        print("DRIVE -42 rotations")
+        self.tank.on_for_rotations(-42, -40, 1, brake=False)
+        print("DRIVE 42 rotations")
+        self.tank.on_for_rotations(42, 40, 1, brake=False)
+
+        self.close_claw()
 
     def set_speed(self, left, right):
         left = self.clamp_speed(left)

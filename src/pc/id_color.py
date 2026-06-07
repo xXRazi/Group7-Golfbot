@@ -195,16 +195,13 @@ def grapler_pos_approx(matrix, color):
     largest = blobs[0]
     nearby_blobs = []
 
-    for blob in blobs:
-        if _blob_distance(largest, blob) <= 45.0:
-            nearby_blobs.append(blob)
+    for i in color_list:
+        if abs(color_list[0][0] - i[0]) <= 10 and abs(color_list[0][1] - i[1]) <= 30:
+            Grapler_one_list.append(i)
+        else:
+            Grapler_two_list.append(i)
 
-    if not nearby_blobs:
-        nearby_blobs = [largest]
-
-    center = _weighted_center(nearby_blobs[:4])
-
-    if center is None:
+    if len(Grapler_one_list) == 0 or len(Grapler_two_list) == 0:
         return None
 
     result = (int(round(center[0])), int(round(center[1])))
@@ -454,3 +451,34 @@ def robot_pose_approx(matrix):
     )
 
     return center_col, center_row, heading
+
+def get_yolo_balls(frame, model, conf_threshold=0.5):
+    """
+    Runs YOLO on the current frame and returns lists of (row, col) tuples 
+    for the centers of the detected balls.
+    """
+    results = model.predict(source=frame, conf=conf_threshold, verbose=False)
+    boxes = results[0].boxes
+    names = model.names
+
+    white_balls = []
+    orange_balls = []
+
+    for box in boxes:
+        # Extract the bounding box coordinates
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        class_id = int(box.cls[0])
+        
+        # Clean the class name just like in your test script
+        class_name = names[class_id].lower().replace("_", "").replace("-", "").replace(" ", "")
+
+        # Calculate the exact center point (row, col)
+        center_row = (y1 + y2) // 2
+        center_col = (x1 + x2) // 2
+
+        if class_name == "whiteball":
+            white_balls.append((center_row, center_col))
+        elif class_name == "orangeball":
+            orange_balls.append((center_row, center_col))
+
+    return white_balls, orange_balls

@@ -10,6 +10,9 @@ POSSYNC = 0xC
 TURN = 0xD
 SETSPEED = 0xE
 FINISH = 0xF
+OPEN_CLAW = 0x10
+CLOSE_CLAW = 0x11
+DELIVER_BALL = 0x12
 
 # Packet formats:
 #
@@ -32,6 +35,9 @@ POSSYNC_LENGTH = 11
 TURN_LENGTH = 4
 SETSPEED_LENGTH = 3
 FINISH_LENGTH = 1
+OPEN_CLAW_LENGTH = 1
+CLOSE_CLAW_LENGTH = 1
+DELIVER_BALL_LENGTH = 1
 
 
 def byte_to_signed(value):
@@ -120,6 +126,9 @@ class CommandHandler:
             TURN: Command(TURN, TURN_LENGTH, self.turn),
             SETSPEED: Command(SETSPEED, SETSPEED_LENGTH, self.set_speed),
             FINISH: Command(FINISH, FINISH_LENGTH, self.finish_command),
+            OPEN_CLAW: Command(OPEN_CLAW, OPEN_CLAW_LENGTH, self.open_claw_command),
+            CLOSE_CLAW: Command(CLOSE_CLAW, CLOSE_CLAW_LENGTH, self.close_claw_command),
+            DELIVER_BALL: Command(DELIVER_BALL, DELIVER_BALL_LENGTH, self.deliver_ball_command),
         }
 
     def get_expected_length(self, data):
@@ -194,6 +203,18 @@ class CommandHandler:
     def finish_command(self, data):
         print("FINISH COMMAND")
         self.motor_controller.stop()
+
+    def open_claw_command(self, data):
+        print("OPEN CLAW COMMAND")
+        self.motor_controller.open_claw()
+
+    def close_claw_command(self, data):
+        print("CLOSE CLAW COMMAND")
+        self.motor_controller.close_claw()
+
+    def deliver_ball_command(self, data):
+        print("DELIVER BALL COMMAND")
+        self.motor_controller.deliver_ball()
 
     def handle_command(self, data):
         if not data:

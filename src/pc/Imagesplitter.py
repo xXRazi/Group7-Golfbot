@@ -44,7 +44,9 @@ def create_matrix(img_):
 
     for label, lower, upper in color_ranges:
         mask = cv.inRange(hsv_img, lower, upper)
+
         positions = np.where(mask > 0)
+
 
         for r, c in zip(positions[0], positions[1]):
             if col_matrix[r][c] == ".":

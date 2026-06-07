@@ -17,6 +17,9 @@ POSSYNC = 0xC
 TURN = 0xD
 SETSPEED = 0xE
 FINISH = 0xF
+OPEN_CLAW = 0x10
+CLOSE_CLAW = 0x11
+DELIVER_BALL = 0x12
 
 CLAW_CLOSE = 0x0
 CLAW_OPEN = 0x1
@@ -254,6 +257,18 @@ def build_finish():
     return bytes([FINISH])
 
 
+def build_open_claw():
+    return bytes([OPEN_CLAW])
+
+
+def build_close_claw():
+    return bytes([CLOSE_CLAW])
+
+
+def build_deliver_ball():
+    return bytes([DELIVER_BALL])
+
+
 def print_help():
     print()
     print("Commands:")
@@ -276,6 +291,9 @@ def print_help():
     print("  corner_ball")
     print("  sendmap ROWS COLS CELL1 CELL2 ...")
     print("  sendmap_fill ROWS COLS VALUE")
+    print("  open_claw")
+    print("  close_claw")
+    print("  deliver_ball")
     print("  finish")
     print("  help")
     print("  quit")
@@ -435,6 +453,15 @@ def interactive_loop(sock, host, port):
                 value = int(parts[3])
 
                 packet = build_sendmap_fill(rows, cols, value)
+
+            elif cmd == "open_claw":
+                packet = build_open_claw()
+
+            elif cmd == "close_claw":
+                packet = build_close_claw()
+
+            elif cmd == "deliver_ball":
+                packet = build_deliver_ball()
 
             elif cmd == "finish":
                 packet = build_finish()
