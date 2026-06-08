@@ -476,3 +476,68 @@ def get_yolo_balls(frame, model, conf_threshold=0.5):
             orange_balls.append((center_row, center_col))
 
     return white_balls, orange_balls
+
+
+def get_robot_and_claw(frame, model, conf_threshold=0.5):
+    """
+    Runs YOLO on the current frame and returns:
+        robot_center = (row, col) or None
+        claw_center  = (row, col) or None
+    """
+
+    results = model.predict(source=frame, conf=conf_threshold, verbose=False)
+    boxes = results[0].boxes
+    names = model.names
+
+    robot_center = None
+    claw_center = None
+
+    for box in boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        class_id = int(box.cls[0])
+
+        class_name = names[class_id].lower().replace("_", "").replace("-", "").replace(" ", "")
+
+        center_row = (y1 + y2) // 2
+        center_col = (x1 + x2) // 2
+
+        if class_name == "robot":
+            robot_center = (center_row, center_col)
+
+        elif class_name == "claw":
+            claw_center = (center_row, center_col)
+
+    return robot_center, claw_center
+
+
+
+def get_goals(frame, model, conf_threshold=0.5):
+    """
+    Runs YOLO on the current frame and returns:
+        big_goal_center   = (row, col) or None
+        small_goal_center = (row, col) or None
+    """
+
+    results = model.predict(source=frame, conf=conf_threshold, verbose=False)
+    boxes = results[0].boxes
+    names = model.names
+
+    big_goal_center = None
+    small_goal_center = None
+
+    for box in boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        class_id = int(box.cls[0])
+
+        class_name = names[class_id].lower().replace("_", "").replace("-", "").replace(" ", "")
+
+        center_row = (y1 + y2) // 2
+        center_col = (x1 + x2) // 2
+
+        if class_name == "big goal":
+            big_goal_center = (center_row, center_col)
+
+        elif class_name == "small goal":
+            small_goal_center = (center_row, center_col)
+
+    return big_goal_center, small_goal_center
