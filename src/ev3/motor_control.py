@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 import math
-from ev3dev2.motor import OUTPUT_A, OUTPUT_D, MoveTank, SpeedPercent
+from ev3dev2.motor import OUTPUT_A, OUTPUT_B, OUTPUT_D, MediumMotor, MoveTank, SpeedPercent
 
 
 class MotorController:
-    DEFAULT_TURN_SPEED = 20
-    DEFAULT_DRIVE_SPEED = 30
+    DEFAULT_TURN_SPEED = 16
+    DEFAULT_DRIVE_SPEED = 24
+    DEFAULT_CLAW_SPEED = 60
+    DEFAULT_CLAW_ROTATIONS = 3.5
+
+    # Ignore very small motion requests; they usually come from camera noise and
+    # make the robot twitch without improving pickup accuracy.
+    MIN_TURN_ANGLE_DEGREES = 2.0
+    MIN_DRIVE_DISTANCE_MAP_UNITS = 3.0
 
     # ------------------------------------------------------------
     # MAP SETTINGS
@@ -15,8 +22,8 @@ class MotorController:
     # Use:
     #   x = column, valid range 0..639
     #   y = row,    valid range 0..479
-    MAP_ROWS = 640
-    MAP_COLS = 360
+    MAP_ROWS = 360
+    MAP_COLS = 640
 
     # Each map coordinate increment in centimeters.
     CM_PER_MAP_UNIT = 0.26
@@ -42,10 +49,13 @@ class MotorController:
 
     # Turning with brake=False may reduce jerk/skid at the end of turns.
     TURN_BRAKE = False
-    DRIVE_BRAKE = False
+    # Brake at the end of each drive command so pickup movements stop exactly
+    # before the ball instead of coasting into it.
+    DRIVE_BRAKE = True
 
-    def __init__(self, left_output=OUTPUT_A, right_output=OUTPUT_D):
+    def __init__(self, left_output=OUTPUT_A, right_output=OUTPUT_D, claw_output=OUTPUT_B):
         self.tank = MoveTank(left_output, right_output)
+        self.claw = MediumMotor(claw_output)
 
         self.left_trim = 0.0
         self.right_trim = 0.0
@@ -120,6 +130,57 @@ class MotorController:
             )
         )
 
+    def open_claw(self, speed=0, rotations=0):
+        """Open the claw using the medium motor on OUTPUT_B."""
+        speed = float(speed)
+        rotations = float(rotations)
+
+        if speed == 0.0:
+            speed = float(self.DEFAULT_CLAW_SPEED)
+        if rotations == 0.0:
+            rotations = float(self.DEFAULT_CLAW_ROTATIONS)
+
+        speed = abs(self.clamp_speed(speed))
+
+        print("CLAW opening speed={:.2f}, rotations={:.2f}".format(speed, rotations))
+        self.claw.on_for_rotations(speed, rotations, brake=True, block=True)
+
+    def close_claw(self, speed=0, rotations=0):
+        """Close the claw using the medium motor on OUTPUT_B."""
+        speed = float(speed)
+        rotations = float(rotations)
+
+        if speed == 0.0:
+            speed = float(self.DEFAULT_CLAW_SPEED)
+        if rotations == 0.0:
+            rotations = float(self.DEFAULT_CLAW_ROTATIONS)
+
+        speed = -abs(self.clamp_speed(speed))
+
+        print("CLAW closing speed={:.2f}, rotations={:.2f}".format(speed, rotations))
+        self.claw.on_for_rotations(speed, rotations, brake=True, block=True)
+
+    def stop_claw(self, brake=True):
+        """Stop only the claw motor, leaving the drive motors alone."""
+        print("CLAW stop brake={}".format(brake))
+        self.claw.off(brake=brake)
+
+    def deliver_ball(self):
+        """Open the claw, back away, move forward, then close the claw."""
+        self.open_claw()
+        self.tank.on_for_rotations(-42, -40, 1, brake=False)
+        self.tank.on_for_rotations(42, 40, 1, brake=False)
+        self.close_claw()
+
+    def pick_corner_ball(self):
+        """Use the corner-ball pickup motion from scoring_and_corner.py."""
+        for _ in range(5):
+            self.tank.on_for_rotations(20, 20, 0.1, brake=True)
+            self.claw.on_for_rotations(20, 0.2, brake=True)
+
+        self.claw.on_for_rotations(30, 0.5, brake=True)
+        self.tank.on_for_rotations(-30, -30, 0.6, brake=True)
+
     def normalize_heading(self, angle):
         """Keep heading in range [0, 360)."""
         return float(angle) % 360.0
@@ -178,7 +239,8 @@ class MotorController:
         angle = float(angle)
         speed = float(speed)
 
-        if angle == 0.0:
+        if abs(angle) < float(self.MIN_TURN_ANGLE_DEGREES):
+            print("TURN skipped; angle {:.2f} below deadband".format(angle))
             self.stop()
             return
 
@@ -238,7 +300,12 @@ class MotorController:
         distance_map_units = float(distance_map_units)
         speed = float(speed)
 
-        if distance_map_units == 0.0:
+        if abs(distance_map_units) < float(self.MIN_DRIVE_DISTANCE_MAP_UNITS):
+            print(
+                "DRIVE skipped; distance {:.2f} below deadband".format(
+                    distance_map_units
+                )
+            )
             self.stop()
             return
 

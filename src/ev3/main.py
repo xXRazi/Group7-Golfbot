@@ -48,6 +48,9 @@ def main():
     motor_controller = MotorController()
     command_handler = CommandHandler(motor_controller)
 
+    supported_codes = ["0x{:X}".format(code) for code in sorted(command_handler.commands.keys())]
+    print("Supported command codes:", supported_codes)
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((HOST, PORT))

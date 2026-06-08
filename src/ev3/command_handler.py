@@ -9,7 +9,14 @@ GOTO = 0xB
 POSSYNC = 0xC
 TURN = 0xD
 SETSPEED = 0xE
+CLAW = 0x9
 FINISH = 0xF
+
+CLAW_CLOSE = 0x0
+CLAW_OPEN = 0x1
+CLAW_STOP = 0x2
+CLAW_DELIVER = 0x3
+CLAW_CORNER = 0x4
 
 # Packet formats:
 #
@@ -21,6 +28,8 @@ FINISH = 0xF
 # POSSYNC:   [CMD][X:int32][Y:int32]
 # TURN:      [CMD][ANGLE:int16][SPEED:int8]
 # SETSPEED:  [CMD][LEFT:int8][RIGHT:int8]
+# CLAW:      [CMD][ACTION:uint8]
+#            ACTION: 0=close, 1=open, 2=stop, 3=deliver, 4=corner pickup
 # FINISH:    [CMD]
 
 ERROR_LENGTH = 1
@@ -31,6 +40,7 @@ GOTO_LENGTH = 9
 POSSYNC_LENGTH = 11
 TURN_LENGTH = 4
 SETSPEED_LENGTH = 3
+CLAW_LENGTH = 2
 FINISH_LENGTH = 1
 
 
@@ -119,6 +129,7 @@ class CommandHandler:
             POSSYNC: Command(POSSYNC, POSSYNC_LENGTH, self.position_sync),
             TURN: Command(TURN, TURN_LENGTH, self.turn),
             SETSPEED: Command(SETSPEED, SETSPEED_LENGTH, self.set_speed),
+            CLAW: Command(CLAW, CLAW_LENGTH, self.claw_command),
             FINISH: Command(FINISH, FINISH_LENGTH, self.finish_command),
         }
 
@@ -146,10 +157,10 @@ class CommandHandler:
     def position_sync(self, data):
         x = read_int32(data, 1)
         y = read_int32(data, 5)
-        heading = read_int16(data, 9) / 10.0      # tenths → degrees
+        heading = read_int16(data, 9) / 10.0
         print("POSITION SYNCHRONIZATION to ({}, {}), heading={:.1f}".format(x, y, heading))
         self.motor_controller.set_position(x, y)
-        self.motor_controller.set_heading(heading) # already exists in motor_control.py
+        self.motor_controller.set_heading(heading)
 
     def turn(self, data):
         angle = read_int16(data, 1)
@@ -160,6 +171,28 @@ class CommandHandler:
         left = byte_to_signed(data[1])
         right = byte_to_signed(data[2])
         self.motor_controller.set_speed(left, right)
+
+    def claw_command(self, data):
+        action = data[1]
+
+        if action == CLAW_OPEN:
+            print("CLAW OPEN")
+            self.motor_controller.open_claw()
+        elif action == CLAW_CLOSE:
+            print("CLAW CLOSE")
+            self.motor_controller.close_claw()
+        elif action == CLAW_STOP:
+            print("CLAW STOP")
+            self.motor_controller.stop_claw()
+        elif action == CLAW_DELIVER:
+            print("CLAW DELIVER")
+            self.motor_controller.deliver_ball()
+        elif action == CLAW_CORNER:
+            print("CLAW CORNER PICKUP")
+            self.motor_controller.pick_corner_ball()
+        else:
+            print("Invalid CLAW action received: {}".format(action))
+            self.motor_controller.stop_claw()
 
     def error_command(self, data):
         print("ERROR COMMAND RECEIVED")
