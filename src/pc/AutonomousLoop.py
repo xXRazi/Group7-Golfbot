@@ -63,6 +63,10 @@ def closest_point(origin, points):
         return None
     return min(points, key=lambda p: ((origin[0] - p[0]) ** 2 + (origin[1] - p[1]) ** 2) ** 0.5)
 
+def path_is_valid(path):
+    """Checks if the generated path is valid."""
+    return path is not None and len(path) > 0
+
 def follow_path(sock, path, step_size=40):
     if not path_is_valid(path):
         print("Invalid path:", path)
@@ -79,6 +83,14 @@ def follow_path(sock, path, step_size=40):
             return False
         time.sleep(0.2)
     return True
+
+def follow_pickup_path_and_close(sock, path):
+    """
+    Follows a path to a ball for pickup.
+    This is a specialized version of follow_path with a smaller step size for more precision.
+    The function name is a misnomer as the calling function is responsible for closing the claw.
+    """
+    return follow_path(sock, path, step_size=15)
 
 def take_picture_and_matrix(camera, count):
     res, frame = camera.read()

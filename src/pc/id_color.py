@@ -180,36 +180,30 @@ def ball_pos_approx_shape(matrix, color):
 
 def grapler_pos_approx(matrix, color):
     """
-    Return the grappler midpoint as (row, col).
+    Return the grappler midpoint as (col, row).
 
-    The old code split green pixels into exactly two groups. That failed when the
-    green pieces were close together or partly merged, returning None even though
-    the grappler was visible.
+    The grappler is identified by two green blobs. This function finds the two
+    largest green blobs and returns the point halfway between their centers.
     """
     blobs = color_blobs(matrix, color, min_area=3, max_area=600)
 
-    if not blobs:
-        print("Grappler debug: no {} blobs found".format(color))
+    if len(blobs) < 2:
+        print("Grappler debug: not enough {} blobs found ({})".format(color, len(blobs)))
         return None
 
-    largest = blobs[0]
-    nearby_blobs = []
+    # Assume the two largest blobs are the grappler markers
+    blob1 = blobs[0]
+    blob2 = blobs[1]
 
-    for i in color_list:
-        if abs(color_list[0][0] - i[0]) <= 10 and abs(color_list[0][1] - i[1]) <= 30:
-            Grapler_one_list.append(i)
-        else:
-            Grapler_two_list.append(i)
+    # Calculate the midpoint between the centers of the two blobs
+    center_row = (blob1["center_row"] + blob2["center_row"]) / 2.0
+    center_col = (blob1["center_col"] + blob2["center_col"]) / 2.0
 
-    if len(Grapler_one_list) == 0 or len(Grapler_two_list) == 0:
-        return None
-
-    result = (int(round(center[0])), int(round(center[1])))
+    result = (int(round(center_col)), int(round(center_row)))
 
     print(
-        "Grappler debug: blobs={}, used={}, result={}".format(
+        "Grappler debug: blobs={}, result={}".format(
             len(blobs),
-            len(nearby_blobs[:4]),
             result,
         )
     )

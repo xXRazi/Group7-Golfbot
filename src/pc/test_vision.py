@@ -3,7 +3,7 @@ from ultralytics import YOLO
 
 def test_live_vision():
     # 1. Load your newly trained "brain"
-    model_path = "/home/sander/workspace/CDIO_live/Group7-Golfbot/runs/detect/arena_model_v18/weights/best.pt"
+    model_path = "/home/sander/workspace/CDIO_live/Group7-Golfbot/runs/detect/arena_model_v19/weights/best.pt"
     model = YOLO(model_path)
 
     # 2. Dynamically find the Class IDs for the balls
