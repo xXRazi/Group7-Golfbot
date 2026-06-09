@@ -12,8 +12,8 @@ def train_robot_vision():
     # 2. Train the model
     # IMPORTANT: Update the 'data' path to point to your specific data.yaml file!
     results = model.train(
-        data='/home/sander/Downloads/golfbot.v7i.yolov8/data.yaml', 
-        epochs=100,             # Number of times the AI will look through your entire dataset
+        data='/home/sander/Downloads/golfbot.v8i.yolov8/data.yaml', 
+        epochs=50,             # Number of times the AI will look through your entire dataset
         patience=15,           # Stop training if the model doesn't improve for 15 epochs
         imgsz=640,             # Standard image resolution YOLO uses to learn
         batch=16,              # How many images it loads into memory at once
