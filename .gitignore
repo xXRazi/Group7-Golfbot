@@ -8,7 +8,7 @@ __pycache__/
 
 .env
 
-
+/runs
 
 # Distribution / packaging
 .Python
