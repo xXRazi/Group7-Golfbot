@@ -3,23 +3,53 @@ from ultralytics import YOLO
 
 def test_live_vision():
     # 1. Load your newly trained "brain"
-    model_path = "/home/sander/workspace/CDIO_live/Group7-Golfbot/runs/detect/arena_model_v110/weights/best.pt"
+    model_path = "/home/sander/workspace/CDIO_live/Group7-Golfbot/runs/detect/arena_model_v117/weights/best.pt"
     model = YOLO(model_path)
 
-    # 2. Dynamically find the Class IDs for the balls
-    target_classes = []
-    
+    # 2. Show the model classes that are available for detection.
     print("Found these classes in your model:", model.names)
-    
-    for class_id, class_name in model.names.items():
-        # Clean the string to handle spaces, underscores, or dashes
-        clean_name = class_name.lower().replace("_", "").replace("-", "").replace(" ", "")
-        
-        if clean_name in ["whiteball", "orangeball"]:
-            target_classes.append(class_id)
 
     # 3. Open the Webcam 
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(4)
+    
+    if not cap.isOpened():
+        print("Camera failed to open. Running YOLO detection on 0.jpg instead.")
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        image_path = os.path.join(script_dir, "0.jpg")
+        frame = cv2.imread(image_path)
+        if frame is None:
+            print("Error: Could not read 0.png")
+            return
+        
+        # Run detection on the image
+        results = model.predict(
+            source=frame,
+            conf=0.5,
+            verbose=False
+        )
+        
+        # Print detections
+        detections = results[0]
+        if len(detections.boxes) > 0:
+            print("Detected objects:")
+            for box in detections.boxes:
+                class_id = int(box.cls[0])
+                class_name = detections.names[class_id]
+                confidence = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0]
+                print(f"  - {class_name}: conf={confidence:.2f}, bbox=({int(x1)}, {int(y1)}, {int(x2)}, {int(y2)})")
+        else:
+            print("No objects detected")
+        
+        # Draw and display
+        annotated_frame = results[0].plot()
+        cv2.imshow("Golfbot Vision Test", annotated_frame)
+        cv2.waitKey(0)
+        cap.release()
+        cv2.destroyAllWindows()
+        return
+    
     print("Starting video feed... Press 'q' to quit.")
 
     while cap.isOpened():
@@ -28,17 +58,32 @@ def test_live_vision():
             print("Failed to grab frame from camera.")
             break
 
-        # 4. Run the AI on the current frame (The Fix)
-        # If target_classes has items, filter by them. If empty, pass None to show everything.
-        filter_ids = target_classes if target_classes else None
-        
+        # 4. Run the AI on the current frame and show all detected classes.
         results = model.predict(
-            source=frame, 
-            conf=0.5, 
-            classes=filter_ids, 
+            source=frame,
+            conf=0.45,
             verbose=False
         )
-
+        # 4b. Print all detections with their details
+        detections = results[0]
+        detected_items = []
+        for i, box in enumerate(detections.boxes):
+            class_id = int(box.cls[0])
+            class_name = detections.names[class_id]
+            confidence = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0]
+            detected_items.append({
+                'class': class_name,
+                'confidence': f"{confidence:.2f}",
+                'bbox': f"({int(x1)}, {int(y1)}, {int(x2)}, {int(y2)})"
+            })
+        
+        if detected_items:
+            print("Detected objects:")
+            for item in detected_items:
+                print(f"  - {item['class']}: conf={item['confidence']}, bbox={item['bbox']}")
+        else:
+            print("No objects detected")
         # 5. Draw the bounding boxes on the image
         annotated_frame = results[0].plot()
 
