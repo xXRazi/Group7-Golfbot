@@ -10,7 +10,7 @@ def test_live_vision():
     print("Found these classes in your model:", model.names)
 
     # 3. Open the Webcam 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0)#s
     
     if not cap.isOpened():
         print("Camera failed to open. Running YOLO detection on 0.jpg instead.")
