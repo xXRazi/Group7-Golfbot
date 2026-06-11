@@ -3,14 +3,14 @@ from ultralytics import YOLO
 
 def test_live_vision():
     # 1. Load your newly trained "brain"
-    model_path = "/home/sander/workspace/CDIO_live/Group7-Golfbot/runs/detect/arena_model_v117/weights/best.pt"
+    model_path = "/Users/jacobsoegaard/PycharmProjects/Group7-Golfbot/runs/detect/arena_model_v1/weights/best.pt"
     model = YOLO(model_path)
 
     # 2. Show the model classes that are available for detection.
     print("Found these classes in your model:", model.names)
 
     # 3. Open the Webcam 
-    cap = cv2.VideoCapture(4)
+    cap = cv2.VideoCapture(0)
     
     if not cap.isOpened():
         print("Camera failed to open. Running YOLO detection on 0.jpg instead.")
