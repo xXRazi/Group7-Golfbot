@@ -24,42 +24,47 @@ CLAW_STOP = 0x2
 CLAW_DELIVER = 0x3
 CLAW_CORNER = 0x4
 
+CLAW_ACTIONS = {
+    "close": CLAW_CLOSE,
+    "open": CLAW_OPEN,
+    "stop": CLAW_STOP,
+    "deliver": CLAW_DELIVER,
+    "corner": CLAW_CORNER,
+    "corner_ball": CLAW_CORNER,
+    "pickup_corner": CLAW_CORNER,
+}
+
+
+def validate_int_range(value, name, lower, upper):
+    if not (lower <= value <= upper):
+        raise ValueError("{} must be between {} and {}".format(name, lower, upper))
+    return value
+
 
 def encode_signed_byte(value):
     """Convert signed int -128..127 to one byte 0..255."""
-    if not (-128 <= value <= 127):
-        raise ValueError("value must be between -128 and 127")
+    validate_int_range(value, "value", -128, 127)
     return value % 256
 
 
 def validate_signed_byte(value, name):
-    if not (-128 <= value <= 127):
-        raise ValueError("{} must be between -128 and 127".format(name))
-    return value
+    return validate_int_range(value, name, -128, 127)
 
 
 def validate_signed_short(value, name):
-    if not (-32768 <= value <= 32767):
-        raise ValueError("{} must be between -32768 and 32767".format(name))
-    return value
+    return validate_int_range(value, name, -32768, 32767)
 
 
 def validate_signed_int(value, name):
-    if not (-2147483648 <= value <= 2147483647):
-        raise ValueError("{} must be between -2147483648 and 2147483647".format(name))
-    return value
+    return validate_int_range(value, name, -2147483648, 2147483647)
 
 
 def validate_unsigned_short(value, name):
-    if not (0 <= value <= 65535):
-        raise ValueError("{} must be between 0 and 65535".format(name))
-    return value
+    return validate_int_range(value, name, 0, 65535)
 
 
 def validate_unsigned_byte(value, name):
-    if not (0 <= value <= 255):
-        raise ValueError("{} must be between 0 and 255".format(name))
-    return value
+    return validate_int_range(value, name, 0, 255)
 
 
 def packet_preview(packet, max_bytes=40):
@@ -187,6 +192,15 @@ def build_claw(action):
         raise ValueError("claw action must be 0, 1, 2, 3, or 4")
 
     return bytes([CLAW, action])
+
+
+def build_claw_action(action):
+    action_code = CLAW_ACTIONS.get(action.lower())
+
+    if action_code is None:
+        return None
+
+    return build_claw(action_code)
 
 
 def build_claw_open():
@@ -379,19 +393,9 @@ def interactive_loop(sock, host, port):
                     print("   or: claw corner")
                     continue
 
-                action = parts[1].lower()
+                packet = build_claw_action(parts[1])
 
-                if action == "open":
-                    packet = build_claw_open()
-                elif action == "close":
-                    packet = build_claw_close()
-                elif action == "stop":
-                    packet = build_claw_stop()
-                elif action == "deliver":
-                    packet = build_claw_deliver()
-                elif action in ("corner", "corner_ball", "pickup_corner"):
-                    packet = build_claw_corner()
-                else:
+                if packet is None:
                     print("Usage: claw open")
                     print("   or: claw close")
                     print("   or: claw stop")

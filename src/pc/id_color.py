@@ -1,5 +1,10 @@
 import math
 
+NEIGHBOR_OFFSETS = (
+    (-1, 0), (1, 0), (0, -1), (0, 1),
+    (-1, -1), (-1, 1), (1, -1), (1, 1),
+)
+
 
 # ============================================================
 # Connected-component helpers
@@ -25,10 +30,7 @@ def color_blobs(matrix, color, min_area=1, max_area=None):
                 current_row, current_col = stack.pop()
                 pixels.append((current_row, current_col))
 
-                for row_delta, col_delta in [
-                    (-1, 0), (1, 0), (0, -1), (0, 1),
-                    (-1, -1), (-1, 1), (1, -1), (1, 1),
-                ]:
+                for row_delta, col_delta in NEIGHBOR_OFFSETS:
                     next_row = current_row + row_delta
                     next_col = current_col + col_delta
 
@@ -342,13 +344,6 @@ def _point_in_expanded_bbox(row, col, bbox_blob, margin):
     )
 
 
-def _distance_between_blobs(blob_a, blob_b):
-    return math.hypot(
-        blob_a["center_row"] - blob_b["center_row"],
-        blob_a["center_col"] - blob_b["center_col"],
-    )
-
-
 def robot_pose_approx(matrix):
     """
     Estimate robot pose from the yellow front marker and pink rear marker.
@@ -402,7 +397,7 @@ def robot_pose_approx(matrix):
 
         for yellow in yellow_blobs:
             for pink in pink_blobs:
-                distance = _distance_between_blobs(yellow, pink)
+                distance = _blob_distance(yellow, pink)
 
                 if not (15 <= distance <= 160):
                     continue

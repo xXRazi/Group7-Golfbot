@@ -4,13 +4,12 @@ import sys
 import time
 
 from camera import (
-    CAMERA_INDEX,
-    SYNC_DELAY_SECONDS,
     close_camera,
-    get_robot_pose_from_camera,
     open_camera,
     show_camera_once,
 )
+from robot_sync import get_robot_pose_from_camera
+from settings import CAMERA_INDEX, SYNC_DELAY_SECONDS
 from com_protocol import (
     HOST,
     PORT,
@@ -21,11 +20,7 @@ from com_protocol import (
     build_possync,
     build_setspeed,
     build_turn,
-    build_claw_open,
-    build_claw_close,
-    build_claw_stop,
-    build_claw_deliver,
-    build_claw_corner,
+    build_claw_action,
     send_command,
 )
 
@@ -79,7 +74,7 @@ def print_help():
     print("  claw corner")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  handshake")
-    print("  preview               show one warped camera frame")
+    print("  preview               show one prepared camera frame")
     print("  finish")
     print("  help")
     print("  quit")
@@ -180,19 +175,9 @@ def interactive_loop(sock, camera):
                     print("   or: claw corner")
                     continue
 
-                action = parts[1].lower()
+                packet = build_claw_action(parts[1])
 
-                if action == "open":
-                    packet = build_claw_open()
-                elif action == "close":
-                    packet = build_claw_close()
-                elif action == "stop":
-                    packet = build_claw_stop()
-                elif action == "deliver":
-                    packet = build_claw_deliver()
-                elif action in ("corner", "corner_ball", "pickup_corner"):
-                    packet = build_claw_corner()
-                else:
+                if packet is None:
                     print("Usage: claw open")
                     print("   or: claw close")
                     print("   or: claw stop")
