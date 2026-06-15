@@ -18,7 +18,7 @@ def train_robot_vision():
         imgsz=640,             # Standard image resolution YOLO uses to learn
         batch=16,              # How many images it loads into memory at once
         device='cpu',          # What hardware to use for training
-        name='arena_model_v1'  # The name of the folder where it will save your results
+        name='arena_model_v3'  # The name of the folder where it will save your results
     )
 
     print("Training complete!")
