@@ -8,14 +8,14 @@ import cv2 as cv
 
 from camera import (
     close_camera,
-    detect_vision_from_raw_frame,
+    detect_vision_from_warped_frame,
     ensure_image_dir,
     open_camera,
     save_frame,
     warp_frame,
 )
 from collection_algorithm import A_star, get_h_list
-from com_protocol import HOST, PORT, build_handshake, send_command
+from com_protocol import HOST, PORT, build_handshake, build_mapsize, send_command
 from delivery import deliver_held_ball_to_goal
 from id_color import ball_pos_approx_shape, goals_pos_approx, grapler_pos_approx, robot_pose_approx
 from Imagesplitter import create_matrix
@@ -23,6 +23,8 @@ from pickup import approach_ball_and_close_claw
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
     CAMERA_INDEX,
+    EV3_MAP_HEIGHT,
+    EV3_MAP_WIDTH,
     FRAME_CAPTURE_INTERVAL_SECONDS,
     IMAGE_DIR,
     MAP_HEIGHT,
@@ -64,9 +66,9 @@ def capture_color_matrix(state, warped_frame):
     return create_matrix(full_path)
 
 
-def capture_detection_scene(state, raw_frame, warped_frame):
+def capture_detection_scene(state, warped_frame):
     color_matrix = capture_color_matrix(state, warped_frame)
-    vision_scene = detect_vision_from_raw_frame(raw_frame)
+    vision_scene = detect_vision_from_warped_frame(warped_frame)
 
     return {
         "color_matrix": color_matrix,
@@ -264,7 +266,10 @@ def run_autonomous_camera():
 
     try:
         sock.connect((HOST, PORT))
-        send_command(sock, build_handshake())
+        if not send_command(sock, build_handshake()):
+            return
+        if not send_command(sock, build_mapsize(EV3_MAP_HEIGHT, EV3_MAP_WIDTH)):
+            return
 
         camera.read()
 
@@ -278,7 +283,7 @@ def run_autonomous_camera():
             now = time.time()
 
             if startup_delay_has_elapsed(state, now) and capture_interval_has_elapsed(state, now):
-                scene = capture_detection_scene(state, frame, warped_frame)
+                scene = capture_detection_scene(state, warped_frame)
                 color_matrix = scene["color_matrix"]
                 vision_scene = scene["vision_scene"]
 

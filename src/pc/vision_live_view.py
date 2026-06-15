@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import cv2 as cv
 
-from camera import close_camera, detect_vision_from_raw_frame, open_camera, read_arena_frame
+from camera import close_camera, detect_vision_from_warped_frame, open_camera, read_arena_frame
 from settings import CAMERA_INDEX, VISION_LIVE_VIEW_ENABLED
 from vision_detection import vision_live_view_quit_requested
 
@@ -19,14 +19,13 @@ def main():
 
     try:
         while camera.isOpened():
-            raw_frame, prepared_frame = read_arena_frame(camera)
+            _raw_frame, prepared_frame = read_arena_frame(camera)
 
-            if raw_frame is None:
+            if prepared_frame is None:
                 continue
 
-            detect_vision_from_raw_frame(raw_frame)
-
             if prepared_frame is not None:
+                detect_vision_from_warped_frame(prepared_frame)
                 cv.imshow("Golfbot prepared frame", prepared_frame)
 
             if vision_live_view_quit_requested() or (cv.waitKey(1) & 0xFF) == ord("q"):

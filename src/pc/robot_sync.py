@@ -1,12 +1,16 @@
 import time
 
-from camera import detect_vision_from_raw_frame, read_arena_frame, save_frame
+from camera import detect_vision_from_warped_frame, read_arena_frame, save_frame
 from com_protocol import build_goto, build_possync, build_turn, send_command
 from id_color import robot_pose_approx
 from Imagesplitter import create_matrix
 from map_utils import clamp_map_point
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
+    EV3_MAP_HEIGHT,
+    EV3_MAP_WIDTH,
+    MAP_HEIGHT,
+    MAP_WIDTH,
     PICKUP_FINAL_HEADING_TOLERANCE,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
@@ -14,6 +18,61 @@ from settings import (
     SYNC_DELAY_SECONDS,
     SYNC_IMAGE_PATH,
 )
+
+
+_EV3_COORDINATE_WARNING_PRINTED = False
+
+
+def _scale_axis(value, source_size, target_size):
+    value = float(value)
+    source_size = int(source_size)
+    target_size = int(target_size)
+
+    if source_size == target_size or source_size <= 1 or target_size <= 1:
+        return int(round(value))
+
+    return int(round(value * float(target_size - 1) / float(source_size - 1)))
+
+
+def _print_ev3_coordinate_warning_once():
+    global _EV3_COORDINATE_WARNING_PRINTED
+
+    if _EV3_COORDINATE_WARNING_PRINTED:
+        return
+
+    if EV3_MAP_WIDTH != MAP_WIDTH or EV3_MAP_HEIGHT != MAP_HEIGHT:
+        print(
+            "EV3 coordinate scaling enabled: PC map={}x{}, EV3 map={}x{}".format(
+                MAP_WIDTH,
+                MAP_HEIGHT,
+                EV3_MAP_WIDTH,
+                EV3_MAP_HEIGHT,
+            )
+        )
+
+    _EV3_COORDINATE_WARNING_PRINTED = True
+
+
+def map_xy_to_ev3_xy(x, y):
+    _print_ev3_coordinate_warning_once()
+    ev3_x = _scale_axis(x, MAP_WIDTH, EV3_MAP_WIDTH)
+    ev3_y = _scale_axis(y, MAP_HEIGHT, EV3_MAP_HEIGHT)
+    return ev3_x, ev3_y
+
+
+def map_point_to_ev3_xy(point):
+    row, col = point
+    return map_xy_to_ev3_xy(col, row)
+
+
+def map_pose_to_ev3_pose(robot_pose):
+    x, y, heading = robot_pose
+    ev3_x, ev3_y = map_xy_to_ev3_xy(x, y)
+    return ev3_x, ev3_y, heading
+
+
+def ev3_xy_is_valid(x, y):
+    return 0 <= int(round(x)) < EV3_MAP_WIDTH and 0 <= int(round(y)) < EV3_MAP_HEIGHT
 
 
 def count_color(matrix, color):
@@ -28,7 +87,7 @@ def count_color(matrix, color):
 
 
 def get_robot_pose_from_camera_frame(camera):
-    raw_frame, warped_frame = read_arena_frame(camera)
+    _raw_frame, warped_frame = read_arena_frame(camera)
 
     if warped_frame is None:
         return None
@@ -50,7 +109,7 @@ def get_robot_pose_from_camera_frame(camera):
         )
 
         color_robot_pose = robot_pose_approx(color_matrix)
-    vision_scene = detect_vision_from_raw_frame(raw_frame)
+    vision_scene = detect_vision_from_warped_frame(warped_frame)
 
     if vision_scene is None:
         if not ALLOW_COLOR_DETECTION_FALLBACK:
@@ -100,17 +159,24 @@ def sync_robot_pose_from_camera(sock, camera):
         print("Could not detect robot pose from camera")
         return None
 
-    x, y, heading = pose
-    x = int(round(x))
-    y = int(round(y))
+    map_x, map_y, heading = pose
+    x, y = map_xy_to_ev3_xy(map_x, map_y)
     heading_tenths = int(round(heading * 10))
 
-    print("Camera sync: x={}, y={}, heading={:.1f}".format(x, y, heading))
+    print(
+        "Camera sync: map=({}, {}), ev3=({}, {}), heading={:.1f}".format(
+            int(round(map_x)),
+            int(round(map_y)),
+            x,
+            y,
+            heading,
+        )
+    )
 
     if not send_command(sock, build_possync(x, y, heading_tenths)):
         return None
 
-    return x, y, heading
+    return int(round(map_x)), int(round(map_y)), heading
 
 
 def sync_robot_from_camera(sock, camera):
@@ -122,12 +188,20 @@ def sync_robot_pose_value(sock, robot_pose, label="Camera pose"):
     if robot_pose is None:
         return False
 
-    x, y, heading = robot_pose
-    x = int(round(x))
-    y = int(round(y))
+    map_x, map_y, heading = robot_pose
+    x, y = map_xy_to_ev3_xy(map_x, map_y)
     heading_tenths = int(round(float(heading) * 10))
 
-    print("{} sync: x={}, y={}, heading={:.1f}".format(label, x, y, heading))
+    print(
+        "{} sync: map=({}, {}), ev3=({}, {}), heading={:.1f}".format(
+            label,
+            int(round(map_x)),
+            int(round(map_y)),
+            x,
+            y,
+            heading,
+        )
+    )
     return send_command(sock, build_possync(x, y, heading_tenths))
 
 
@@ -168,10 +242,11 @@ def turn_robot_to_heading(sock, camera, target_heading, tolerance_degrees=PICKUP
 
 
 def goto_then_sync(sock, camera, row, col):
-    x = int(round(col))
-    y = int(round(row))
+    map_x = int(round(col))
+    map_y = int(round(row))
+    x, y = map_xy_to_ev3_xy(map_x, map_y)
 
-    print("Sending GOTO x={}, y={}".format(x, y))
+    print("Sending GOTO map=({}, {}), ev3=({}, {})".format(map_x, map_y, x, y))
 
     if not send_command(sock, build_goto(x, y)):
         return False
@@ -184,8 +259,17 @@ def goto_then_sync(sock, camera, row, col):
 def goto_map_point_with_pose(sock, camera, robot_pose, target_point, label="Delivery GOTO"):
     """Sync a known camera pose, GOTO a map point, then sync again."""
     target_row, target_col = clamp_map_point(target_point, margin=5)
+    target_x, target_y = map_point_to_ev3_xy((target_row, target_col))
 
-    print("{}: target center=({}, {})".format(label, target_col, target_row))
+    print(
+        "{}: target center map=({}, {}), ev3=({}, {})".format(
+            label,
+            target_col,
+            target_row,
+            target_x,
+            target_y,
+        )
+    )
 
     if robot_pose is not None:
         if not sync_robot_pose_value(sock, robot_pose, label="{} pre-GOTO".format(label)):
@@ -194,7 +278,7 @@ def goto_map_point_with_pose(sock, camera, robot_pose, target_point, label="Deli
         if not sync_robot_from_camera(sock, camera):
             return False
 
-    if not send_command(sock, build_goto(target_col, target_row)):
+    if not send_command(sock, build_goto(target_x, target_y)):
         return False
 
     time.sleep(SYNC_DELAY_SECONDS)

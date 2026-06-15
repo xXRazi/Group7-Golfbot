@@ -1,7 +1,7 @@
 import math
 import time
 
-from camera import create_matrix_from_frame, detect_vision_from_raw_frame, read_arena_frame
+from camera import create_matrix_from_frame, detect_vision_from_warped_frame, read_arena_frame
 from collection_algorithm import A_star
 from com_protocol import (
     build_claw_close,
@@ -23,6 +23,7 @@ from map_utils import (
 )
 from robot_sync import (
     goto_then_sync,
+    map_xy_to_ev3_xy,
     normalize_turn_angle,
     sync_robot_from_camera,
     sync_robot_pose_value,
@@ -41,6 +42,8 @@ from settings import (
     PICKUP_FINAL_NUDGE_MAX_DISTANCE,
     PICKUP_FINAL_SCOOP_DISTANCE,
     PICKUP_GRAPPLER_CLOSE_DISTANCE,
+    PICKUP_OFFCENTER_DISTANCE_SCALE,
+    PICKUP_OFFCENTER_SCOOP_SCALE_LIMIT,
     PICKUP_PREAPPROACH_DISTANCE,
     PICKUP_SERVO_FAR_FORWARD_STEP,
     PICKUP_SERVO_MAX_FORWARD_STEP,
@@ -245,15 +248,48 @@ def choose_closest_ball_to_grappler(balls, grappler_point):
     return min(balls, key=lambda ball: point_distance(ball, grappler_point))
 
 
+def pickup_offcenter_ratio(point):
+    if point is None:
+        return 0.0
+
+    row, col = point
+    center_row = float(MAP_HEIGHT - 1) / 2.0
+    center_col = float(MAP_WIDTH - 1) / 2.0
+    max_distance = math.hypot(center_row, center_col)
+
+    if max_distance <= 0.0:
+        return 0.0
+
+    distance = math.hypot(float(row) - center_row, float(col) - center_col)
+    return max(0.0, min(1.0, distance / max_distance))
+
+
+def pickup_distance_scale(point):
+    return 1.0 + float(PICKUP_OFFCENTER_DISTANCE_SCALE) * pickup_offcenter_ratio(point)
+
+
+def scaled_pickup_distance(distance, point):
+    scale = pickup_distance_scale(point)
+    return float(distance) * scale, scale
+
+
+def scaled_final_scoop_distance(point):
+    scale = min(
+        float(PICKUP_OFFCENTER_SCOOP_SCALE_LIMIT),
+        pickup_distance_scale(point),
+    )
+    return float(PICKUP_FINAL_SCOOP_DISTANCE) * scale
+
+
 def capture_pickup_scene_frame(camera, ball_color="W"):
     """Read one camera frame and return detection results used for pickup."""
-    raw_frame, warped_frame = read_arena_frame(camera)
+    _raw_frame, warped_frame = read_arena_frame(camera)
 
     if warped_frame is None:
         return None
 
     color_matrix = create_matrix_from_frame(warped_frame)
-    vision_scene = detect_vision_from_raw_frame(raw_frame)
+    vision_scene = detect_vision_from_warped_frame(warped_frame)
 
     robot_pose = None
     if vision_scene is not None:
@@ -376,7 +412,7 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
         target_row, target_col = clamped_row, clamped_col
 
     print(
-        "Pickup servo: center->ball distance={:.1f}; moving {:.1f} to center=({}, {})".format(
+        "Pickup servo: center->ball distance={:.1f}; moving {:.1f} to map center=({}, {})".format(
             distance_to_target,
             distance_map_units,
             target_col,
@@ -387,7 +423,10 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
     if not sync_robot_pose_value(sock, robot_pose, label="Pickup servo pre-GOTO"):
         return False
 
-    if not send_command(sock, build_goto(target_col, target_row)):
+    ev3_x, ev3_y = map_xy_to_ev3_xy(target_col, target_row)
+    print("Pickup servo: GOTO ev3=({}, {})".format(ev3_x, ev3_y))
+
+    if not send_command(sock, build_goto(ev3_x, ev3_y)):
         return False
 
     time.sleep(SYNC_DELAY_SECONDS)
@@ -409,7 +448,7 @@ def final_scoop_forward_before_close(sock, camera, robot_pose, distance_map_unit
     target_y = target_row
 
     print(
-        "Pickup final scoop: moving forward {:.1f} map units to center=({}, {}) before closing".format(
+        "Pickup final scoop: moving forward {:.1f} map units to map center=({}, {}) before closing".format(
             distance_map_units,
             target_x,
             target_y,
@@ -419,7 +458,10 @@ def final_scoop_forward_before_close(sock, camera, robot_pose, distance_map_unit
     if not sync_robot_pose_value(sock, robot_pose, label="Pickup final scoop pre-GOTO"):
         return False
 
-    if not send_command(sock, build_goto(target_x, target_y)):
+    ev3_x, ev3_y = map_xy_to_ev3_xy(target_x, target_y)
+    print("Pickup final scoop: GOTO ev3=({}, {})".format(ev3_x, ev3_y))
+
+    if not send_command(sock, build_goto(ev3_x, ev3_y)):
         return False
 
     time.sleep(SYNC_DELAY_SECONDS)
@@ -454,14 +496,21 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
 
         center_x, center_y, current_heading = robot_pose
         center_point = (int(round(center_y)), int(round(center_x)))
-        center_to_ball = point_distance(center_point, ball_point)
+        center_to_ball_raw = point_distance(center_point, ball_point)
+        center_to_ball, perspective_scale = scaled_pickup_distance(center_to_ball_raw, ball_point)
+        final_scoop_distance = scaled_final_scoop_distance(ball_point)
         target_heading = heading_from_map_points(center_point, ball_point)
         heading_error = normalize_turn_angle(target_heading - current_heading)
 
         if grappler_point is not None:
-            grappler_to_ball = point_distance(grappler_point, ball_point)
-            grappler_text = ", grappler={}, grappler_distance={:.1f}".format(
+            grappler_to_ball_raw = point_distance(grappler_point, ball_point)
+            grappler_to_ball = grappler_to_ball_raw * perspective_scale
+            grappler_text = (
+                ", grappler={}, grappler_distance={:.1f}, "
+                "scaled_grappler_distance={:.1f}"
+            ).format(
                 grappler_point,
+                grappler_to_ball_raw,
                 grappler_to_ball,
             )
         else:
@@ -469,11 +518,14 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
 
         print(
             "Pickup servo iteration {}: center={}, ball={}, center_distance={:.1f}, "
+            "scaled_center_distance={:.1f}, perspective_scale={:.2f}, "
             "heading={:.1f}, target_heading={:.1f}, heading_error={:.1f}{}".format(
                 iteration,
                 center_point,
                 ball_point,
+                center_to_ball_raw,
                 center_to_ball,
+                perspective_scale,
                 current_heading,
                 target_heading,
                 heading_error,
@@ -485,7 +537,12 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             print(
                 "Pickup servo: ball is inside grappler range; doing final scoop instead of turning"
             )
-            return final_scoop_forward_before_close(sock, camera, robot_pose)
+            return final_scoop_forward_before_close(
+                sock,
+                camera,
+                robot_pose,
+                distance_map_units=final_scoop_distance,
+            )
 
         if center_to_ball <= PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE + PICKUP_CENTER_TO_BALL_MARGIN:
             if abs(heading_error) > PICKUP_FINAL_HEADING_CLOSE_TOLERANCE:
@@ -501,15 +558,25 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
                 continue
 
             print("Pickup servo: center is close enough; doing final scoop before claw close")
-            return final_scoop_forward_before_close(sock, camera, robot_pose)
+            return final_scoop_forward_before_close(
+                sock,
+                camera,
+                robot_pose,
+                distance_map_units=final_scoop_distance,
+            )
 
         max_step = pickup_servo_forward_step(center_to_ball)
         forward_distance = center_to_ball - PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE
         forward_distance = min(forward_distance, max_step)
 
         if forward_distance < PICKUP_SERVO_MIN_FORWARD_STEP:
-            print("Pickup servo: remaining center move is tiny; closing")
-            return True
+            print("Pickup servo: remaining center move is tiny; doing final scoop before claw close")
+            return final_scoop_forward_before_close(
+                sock,
+                camera,
+                robot_pose,
+                distance_map_units=final_scoop_distance,
+            )
 
         print(
             "Pickup servo step choice: max_step={:.1f}, requested_forward={:.1f}".format(
@@ -527,14 +594,28 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
         final_ball = final_scene["ball_point"]
         if final_robot is not None and final_ball is not None:
             final_center = (int(round(final_robot[1])), int(round(final_robot[0])))
-            final_distance = point_distance(final_center, final_ball)
-            print("Pickup servo: max iterations reached; final center distance={:.1f}".format(final_distance))
+            final_distance_raw = point_distance(final_center, final_ball)
+            final_distance, final_scale = scaled_pickup_distance(final_distance_raw, final_ball)
+            final_scoop_distance = scaled_final_scoop_distance(final_ball)
+            print(
+                "Pickup servo: max iterations reached; final center distance={:.1f}, "
+                "scaled_final_distance={:.1f}, perspective_scale={:.2f}".format(
+                    final_distance_raw,
+                    final_distance,
+                    final_scale,
+                )
+            )
             if final_distance > PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE + 8.0:
                 print("Pickup servo: still too far from ball; not closing claw")
                 return False
 
             if final_robot is not None:
-                return final_scoop_forward_before_close(sock, camera, final_robot)
+                return final_scoop_forward_before_close(
+                    sock,
+                    camera,
+                    final_robot,
+                    distance_map_units=final_scoop_distance,
+                )
 
     print("Pickup servo: max iterations reached but final distance is acceptable; closing")
     return True
@@ -562,13 +643,18 @@ def final_pickup_camera_nudge(sock, camera, ball_color="W", allow_extra_turn=Tru
     ball_heading = heading_from_map_points(grappler_point, ball_point)
     _center_x, _center_y, current_heading = robot_pose
     heading_error = normalize_turn_angle(ball_heading - current_heading)
+    distance_to_ball_raw = point_distance(grappler_point, ball_point)
+    distance_to_ball, perspective_scale = scaled_pickup_distance(distance_to_ball_raw, ball_point)
 
     print(
         "Pickup final nudge: grappler={}, ball={}, distance={:.1f}, "
+        "scaled_distance={:.1f}, perspective_scale={:.2f}, "
         "ball_heading={:.1f}, robot_heading={:.1f}, heading_error={:.1f}".format(
             grappler_point,
             ball_point,
-            point_distance(grappler_point, ball_point),
+            distance_to_ball_raw,
+            distance_to_ball,
+            perspective_scale,
             ball_heading,
             current_heading,
             heading_error,
@@ -587,7 +673,6 @@ def final_pickup_camera_nudge(sock, camera, ball_color="W", allow_extra_turn=Tru
 
     center_x, center_y, current_heading = robot_pose
 
-    distance_to_ball = point_distance(grappler_point, ball_point)
     desired_distance = float(PICKUP_STOP_DISTANCE)
     forward_distance = distance_to_ball - desired_distance
 
@@ -605,14 +690,17 @@ def final_pickup_camera_nudge(sock, camera, ball_color="W", allow_extra_turn=Tru
         return True
 
     print(
-        "Pickup final nudge: driving forward {:.1f} map units to center=({}, {})".format(
+        "Pickup final nudge: driving forward {:.1f} map units to map center=({}, {})".format(
             forward_distance,
             target_x,
             target_y,
         )
     )
 
-    if not send_command(sock, build_goto(target_x, target_y)):
+    ev3_x, ev3_y = map_xy_to_ev3_xy(target_x, target_y)
+    print("Pickup final nudge: GOTO ev3=({}, {})".format(ev3_x, ev3_y))
+
+    if not send_command(sock, build_goto(ev3_x, ev3_y)):
         return False
 
     time.sleep(SYNC_DELAY_SECONDS)

@@ -3,6 +3,12 @@ import socket
 import struct
 import sys
 
+try:
+    from settings import EV3_MAP_HEIGHT, EV3_MAP_WIDTH
+except ImportError:
+    EV3_MAP_HEIGHT = 480
+    EV3_MAP_WIDTH = 640
+
 
 HOST = "ev3dev.local"
 PORT = 5000
@@ -10,6 +16,7 @@ PORT = 5000
 ERROR = 0x0
 CALIBRATE = 0x1
 SENDMAP = 0x2
+MAPSIZE = 0x4
 CLAW = 0x9
 HANDSHAKE = 0xA
 GOTO = 0xB
@@ -102,6 +109,20 @@ def send_command(sock, packet):
 
 def build_handshake():
     return bytes([HANDSHAKE])
+
+
+def build_mapsize(rows, cols):
+    """
+    MAPSIZE packet:
+    [CMD][ROWS:uint16][COLS:uint16]
+
+    This tells the EV3 odometry/controller which coordinate bounds the PC is
+    using, without sending the full occupancy map.
+    """
+    rows = validate_unsigned_short(rows, "rows")
+    cols = validate_unsigned_short(cols, "cols")
+
+    return struct.pack(">BHH", MAPSIZE, rows, cols)
 
 
 def build_calibrate(left_trim, right_trim):
@@ -272,6 +293,8 @@ def print_help():
     print()
     print("Commands:")
     print("  handshake")
+    print("  mapsize")
+    print("  mapsize ROWS COLS")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  goto X Y")
     print("  possync X Y")
@@ -327,6 +350,20 @@ def interactive_loop(sock, host, port):
         try:
             if cmd == "handshake":
                 packet = build_handshake()
+
+            elif cmd == "mapsize":
+                if len(parts) == 1:
+                    rows = EV3_MAP_HEIGHT
+                    cols = EV3_MAP_WIDTH
+                elif len(parts) == 3:
+                    rows = int(parts[1])
+                    cols = int(parts[2])
+                else:
+                    print("Usage: mapsize")
+                    print("   or: mapsize ROWS COLS")
+                    continue
+
+                packet = build_mapsize(rows, cols)
 
             elif cmd == "calibrate":
                 if len(parts) != 3:

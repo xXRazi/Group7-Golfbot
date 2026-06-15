@@ -72,6 +72,40 @@ class VisionScene:
 
         return max(candidates, key=lambda detection: detection.confidence)
 
+    def _bbox_matches_map_coordinates(self, detection, tolerance=3.0):
+        x1, y1, x2, y2 = detection.bbox
+        bbox_center_row = (float(y1) + float(y2)) / 2.0
+        bbox_center_col = (float(x1) + float(x2)) / 2.0
+        point_row, point_col = detection.point
+
+        return (
+            abs(bbox_center_row - float(point_row)) <= tolerance
+            and abs(bbox_center_col - float(point_col)) <= tolerance
+        )
+
+    def _goal_opening_point(self, detection, side):
+        """
+        Return the inner edge of a goal box.
+
+        For the left goal, the scoring opening is its right edge. For the right
+        goal, the scoring opening is its left edge. If detections were mapped
+        from a non-map image, fall back to the mapped center point.
+        """
+        if not self._bbox_matches_map_coordinates(detection):
+            return detection.point
+
+        x1, y1, x2, y2 = detection.bbox
+        row = int(round((float(y1) + float(y2)) / 2.0))
+
+        if side == "left":
+            col = int(round(max(float(x1), float(x2))))
+        elif side == "right":
+            col = int(round(min(float(x1), float(x2))))
+        else:
+            raise ValueError("side must be 'left' or 'right'")
+
+        return row, col
+
     def ball_points(self, color):
         kind = None
 
@@ -141,10 +175,12 @@ class VisionScene:
             return None
 
         if side == "left":
-            return min(goals, key=lambda detection: detection.point[1]).point
+            detection = min(goals, key=lambda detection: detection.point[1])
+            return self._goal_opening_point(detection, side)
 
         if side == "right":
-            return max(goals, key=lambda detection: detection.point[1]).point
+            detection = max(goals, key=lambda detection: detection.point[1])
+            return self._goal_opening_point(detection, side)
 
         raise ValueError("side must be 'left' or 'right'")
 

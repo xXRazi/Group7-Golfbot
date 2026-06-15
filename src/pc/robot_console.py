@@ -8,8 +8,8 @@ from camera import (
     open_camera,
     show_camera_once,
 )
-from robot_sync import get_robot_pose_from_camera
-from settings import CAMERA_INDEX, SYNC_DELAY_SECONDS
+from robot_sync import get_robot_pose_from_camera, map_pose_to_ev3_pose
+from settings import CAMERA_INDEX, EV3_MAP_HEIGHT, EV3_MAP_WIDTH, SYNC_DELAY_SECONDS
 from com_protocol import (
     HOST,
     PORT,
@@ -17,6 +17,7 @@ from com_protocol import (
     build_finish,
     build_goto,
     build_handshake,
+    build_mapsize,
     build_possync,
     build_setspeed,
     build_turn,
@@ -32,13 +33,19 @@ def sync_robot_from_camera(sock, camera):
         print("Could not detect robot pose from camera")
         return True
 
-    x, y, heading = pose
-
-    x = int(round(x))
-    y = int(round(y))
+    map_x, map_y, heading = pose
+    x, y, heading = map_pose_to_ev3_pose(pose)
     heading_tenths = int(round(heading * 10))
 
-    print("Camera sync: x={}, y={}, heading={:.1f}".format(x, y, heading))
+    print(
+        "Camera sync: map=({}, {}), ev3=({}, {}), heading={:.1f}".format(
+            int(round(map_x)),
+            int(round(map_y)),
+            x,
+            y,
+            heading,
+        )
+    )
 
     return send_command(sock, build_possync(x, y, heading_tenths))
 
@@ -74,6 +81,7 @@ def print_help():
     print("  claw corner")
     print("  calibrate LEFT_TRIM RIGHT_TRIM")
     print("  handshake")
+    print("  mapsize               send current PC map dimensions to the EV3")
     print("  preview               show one prepared camera frame")
     print("  finish")
     print("  help")
@@ -203,6 +211,10 @@ def interactive_loop(sock, camera):
                 if not send_command(sock, build_handshake()):
                     break
 
+            elif cmd == "mapsize":
+                if not send_command(sock, build_mapsize(EV3_MAP_HEIGHT, EV3_MAP_WIDTH)):
+                    break
+
             elif cmd == "preview":
                 show_camera_once(camera)
 
@@ -249,6 +261,8 @@ def main():
             print("Connected to EV3 at {}:{}".format(host, port))
 
             if not send_command(sock, build_handshake()):
+                return
+            if not send_command(sock, build_mapsize(EV3_MAP_HEIGHT, EV3_MAP_WIDTH)):
                 return
 
             interactive_loop(sock, camera)
