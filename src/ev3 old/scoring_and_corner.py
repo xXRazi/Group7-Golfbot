@@ -11,7 +11,7 @@ claw_direction = 1
 
 
 def open_claw():
-    claw.on_for_rotations(100, 3.5, block=True)
+    claw.on_for_rotations(100, 3.5, block=False)
 
 def close_claw():
     claw.on_for_rotations(-100, 3.5)

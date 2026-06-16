@@ -2,13 +2,23 @@ import math
 import time
 
 from camera import create_matrix_from_frame, detect_vision_from_warped_frame, read_arena_frame
+from collection_algorithm import A_star
 from com_protocol import build_claw_deliver, build_setspeed, build_turn, send_command
 from id_color import color_blobs, robot_pose_approx
-from map_utils import clamp_map_point, point_distance, robot_center_point
+from map_utils import (
+    clamp_map_point,
+    path_is_valid,
+    point_distance,
+    robot_center_point,
+    simplify_path_for_robot,
+)
+from path_obstacles import clear_path_endpoint, clone_path_matrix, mark_red_cross_obstacles
 from robot_sync import (
+    goto_then_sync_with_pre_turn,
     goto_map_point_with_pose,
     normalize_turn_angle,
     sync_robot_pose_from_camera,
+    sync_robot_pose_value,
 )
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
@@ -29,6 +39,7 @@ from settings import (
     DELIVERY_REQUIRE_CENTER_POSITION,
     DELIVERY_ROBOT_EDGE_MARGIN,
     DELIVERY_USE_FIXED_GOALS,
+    DELIVERY_WAYPOINT_STEP_SIZE,
     MAP_HEIGHT,
     MAP_WIDTH,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
@@ -36,6 +47,7 @@ from settings import (
     ROBOT_POSE_RETRY_DELAY_SECONDS,
     ROBOT_POSE_RETRY_FRAMES,
 )
+from vision_debug_capture import save_missing_detection_frame
 
 
 def capture_delivery_scene_frame(camera):
@@ -47,6 +59,7 @@ def capture_delivery_scene_frame(camera):
 
     color_matrix = create_matrix_from_frame(warped_frame)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
+    save_missing_detection_frame(warped_frame, vision_scene, "delivery")
 
     robot_pose = None
     if vision_scene is not None:
@@ -455,6 +468,98 @@ def turn_delivery_to_heading(sock, camera, target_heading, tolerance_degrees=DEL
     return abs(final_error) <= float(tolerance_degrees)
 
 
+def delivery_path_matrix(scene, start_point, target_point):
+    color_matrix = scene.get("color_matrix") if scene is not None else None
+
+    if color_matrix is None:
+        return None, 0
+
+    path_matrix = clone_path_matrix(color_matrix)
+    red_cross_count = mark_red_cross_obstacles(
+        path_matrix,
+        scene.get("vision_scene"),
+    )
+
+    if red_cross_count:
+        clear_path_endpoint(path_matrix, start_point, radius=10, value=".")
+        clear_path_endpoint(path_matrix, target_point, radius=10, value=".")
+
+    return path_matrix, red_cross_count
+
+
+def follow_delivery_path(sock, camera, robot_pose, robot_path, label):
+    if not path_is_valid(robot_path):
+        print("{}: invalid path {}".format(label, robot_path))
+        return False
+
+    if not sync_robot_pose_value(sock, robot_pose, label="{} pre-path".format(label)):
+        return False
+
+    waypoints = simplify_path_for_robot(
+        robot_path,
+        min_spacing=DELIVERY_WAYPOINT_STEP_SIZE,
+    )
+
+    if len(waypoints) > 1:
+        waypoints = waypoints[1:]
+
+    print("{}: following {} waypoint(s) around red cross".format(label, len(waypoints)))
+
+    for index, (row, col) in enumerate(waypoints, start=1):
+        print(
+            "{} waypoint {}/{}: map=({}, {})".format(
+                label,
+                index,
+                len(waypoints),
+                col,
+                row,
+            )
+        )
+
+        waypoint_label = "{} waypoint {}/{}".format(label, index, len(waypoints))
+
+        if not goto_then_sync_with_pre_turn(sock, camera, row, col, label=waypoint_label):
+            return False
+
+    return True
+
+
+def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="Delivery waypoint"):
+    if robot_pose is None:
+        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
+
+    start_point = robot_center_point(robot_pose)
+
+    if point_distance(start_point, target_point) <= 2.0:
+        print("{}: already at target {}".format(label, target_point))
+        return sync_robot_pose_value(sock, robot_pose, label="{} already-at-target".format(label))
+
+    path_matrix, red_cross_count = delivery_path_matrix(scene, start_point, target_point)
+
+    if red_cross_count <= 0:
+        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
+
+    robot_path = A_star(path_matrix, start_point, target_point)
+
+    if not path_is_valid(robot_path):
+        print(
+            "{}: red cross was detected, but A* could not find a safe route: {}".format(
+                label,
+                robot_path,
+            )
+        )
+        return False
+
+    print(
+        "{}: planned red-cross avoiding route from {} to {}".format(
+            label,
+            start_point,
+            target_point,
+        )
+    )
+    return follow_delivery_path(sock, camera, robot_pose, robot_path, label)
+
+
 def reverse_delivery_away_from_edge(sock, camera):
     print(
         "Delivery safety: claw is pointed into an edge; reversing for {:.2f}s before turning".format(
@@ -539,7 +644,7 @@ def move_to_safe_delivery_staging(sock, camera, scene):
         )
     )
 
-    if not goto_map_point_with_pose(sock, camera, robot_pose, safe_center, label="Delivery safety staging"):
+    if not goto_delivery_target(sock, camera, scene, robot_pose, safe_center, label="Delivery safety staging"):
         return None
 
     return sync_robot_pose_from_camera(sock, camera)
@@ -748,7 +853,7 @@ def deliver_held_ball_to_goal(sock, camera):
         )
     )
 
-    if not goto_map_point_with_pose(sock, camera, robot_pose, delivery_waypoint, label="Delivery waypoint"):
+    if not goto_delivery_target(sock, camera, scene, robot_pose, delivery_waypoint, label="Delivery waypoint"):
         return False
 
     print("Delivery: aligning to goal heading {:.1f}".format(goal_heading))

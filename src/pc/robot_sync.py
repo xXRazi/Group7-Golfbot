@@ -4,13 +4,14 @@ from camera import detect_vision_from_warped_frame, read_arena_frame, save_frame
 from com_protocol import build_goto, build_possync, build_turn, send_command
 from id_color import robot_pose_approx
 from Imagesplitter import create_matrix
-from map_utils import clamp_map_point
+from map_utils import clamp_map_point, heading_from_map_points, point_distance, robot_center_point
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
     EV3_MAP_HEIGHT,
     EV3_MAP_WIDTH,
     MAP_HEIGHT,
     MAP_WIDTH,
+    PATH_PRETURN_HEADING_TOLERANCE,
     PICKUP_FINAL_HEADING_TOLERANCE,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
@@ -18,6 +19,7 @@ from settings import (
     SYNC_DELAY_SECONDS,
     SYNC_IMAGE_PATH,
 )
+from vision_debug_capture import save_missing_detection_frame
 
 
 _EV3_COORDINATE_WARNING_PRINTED = False
@@ -110,6 +112,13 @@ def get_robot_pose_from_camera_frame(camera):
 
         color_robot_pose = robot_pose_approx(color_matrix)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
+    save_missing_detection_frame(
+        warped_frame,
+        vision_scene,
+        "sync",
+        require_claw=False,
+        require_robot_pose=True,
+    )
 
     if vision_scene is None:
         if not ALLOW_COLOR_DETECTION_FALLBACK:
@@ -283,3 +292,132 @@ def goto_map_point_with_pose(sock, camera, robot_pose, target_point, label="Deli
 
     time.sleep(SYNC_DELAY_SECONDS)
     return sync_robot_from_camera(sock, camera)
+
+
+def _pre_turn_for_goto(sock, camera, robot_pose, target_point, label, tolerance_degrees):
+    start_point = robot_center_point(robot_pose)
+
+    if point_distance(start_point, target_point) <= 2.0:
+        print("{} pre-turn: already at target".format(label))
+        return robot_pose
+
+    target_heading = heading_from_map_points(start_point, target_point)
+    _map_x, _map_y, current_heading = robot_pose
+    turn_angle = normalize_turn_angle(float(target_heading) - float(current_heading))
+    tolerance_degrees = float(tolerance_degrees)
+
+    print(
+        "{} pre-turn: center={}, target={}, current_heading={:.1f}, "
+        "target_heading={:.1f}, turn={:.1f}, tolerance={:.1f}".format(
+            label,
+            start_point,
+            target_point,
+            current_heading,
+            target_heading,
+            turn_angle,
+            tolerance_degrees,
+        )
+    )
+
+    if abs(turn_angle) <= tolerance_degrees:
+        return robot_pose
+
+    if not send_command(sock, build_turn(int(round(turn_angle)), 0)):
+        return None
+
+    time.sleep(PICKUP_FINAL_SYNC_DELAY_SECONDS)
+    synced_pose = sync_robot_pose_from_camera(sock, camera)
+
+    if synced_pose is None:
+        return None
+
+    _synced_x, _synced_y, synced_heading = synced_pose
+    final_error = normalize_turn_angle(float(target_heading) - float(synced_heading))
+
+    print(
+        "{} pre-turn: verified_heading={:.1f}, error={:.1f}".format(
+            label,
+            synced_heading,
+            final_error,
+        )
+    )
+
+    if abs(final_error) > tolerance_degrees:
+        print(
+            "{} pre-turn: heading is still outside tolerance; refusing forward GOTO".format(
+                label,
+            )
+        )
+        return None
+
+    return synced_pose
+
+
+def goto_map_point_with_pose_pre_turn(
+    sock,
+    camera,
+    robot_pose,
+    target_point,
+    label="Path GOTO",
+    tolerance_degrees=PATH_PRETURN_HEADING_TOLERANCE,
+):
+    """Sync pose, rotate to the segment heading, then send the forward GOTO."""
+    target_row, target_col = clamp_map_point(target_point, margin=5)
+    target_point = (target_row, target_col)
+    target_x, target_y = map_point_to_ev3_xy(target_point)
+
+    print(
+        "{}: target center map=({}, {}), ev3=({}, {})".format(
+            label,
+            target_col,
+            target_row,
+            target_x,
+            target_y,
+        )
+    )
+
+    if robot_pose is not None:
+        if not sync_robot_pose_value(sock, robot_pose, label="{} pre-GOTO".format(label)):
+            return False
+        pose = robot_pose
+    else:
+        pose = sync_robot_pose_from_camera(sock, camera)
+
+        if pose is None:
+            return False
+
+    pose = _pre_turn_for_goto(
+        sock,
+        camera,
+        pose,
+        target_point,
+        label,
+        tolerance_degrees,
+    )
+
+    if pose is None:
+        return False
+
+    if not send_command(sock, build_goto(target_x, target_y)):
+        return False
+
+    time.sleep(SYNC_DELAY_SECONDS)
+    return sync_robot_from_camera(sock, camera)
+
+
+def goto_then_sync_with_pre_turn(
+    sock,
+    camera,
+    row,
+    col,
+    label="Path GOTO",
+    tolerance_degrees=PATH_PRETURN_HEADING_TOLERANCE,
+):
+    return goto_map_point_with_pose_pre_turn(
+        sock,
+        camera,
+        None,
+        (row, col),
+        label=label,
+        tolerance_degrees=tolerance_degrees,
+    )

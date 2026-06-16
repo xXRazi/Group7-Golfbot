@@ -96,11 +96,60 @@ def recv_response(sock):
         return False
 
 
+def _signed_packet_byte(value):
+    return value - 256 if value > 127 else value
+
+
+def _packet_moves_robot(packet):
+    if not packet:
+        return False
+
+    command = packet[0]
+
+    if command == GOTO:
+        return True
+
+    if command == TURN:
+        if len(packet) < 4:
+            return True
+        angle = struct.unpack(">h", packet[1:3])[0]
+        return angle != 0
+
+    if command == SETSPEED:
+        if len(packet) < 3:
+            return True
+        left = _signed_packet_byte(packet[1])
+        right = _signed_packet_byte(packet[2])
+        return left != 0 or right != 0
+
+    if command == CLAW and len(packet) >= 2:
+        return packet[1] in (CLAW_DELIVER, CLAW_CORNER)
+
+    return False
+
+
+def _mark_debug_capture_robot_moved(packet):
+    if not _packet_moves_robot(packet):
+        return
+
+    try:
+        from vision_debug_capture import mark_robot_moved
+    except ImportError:
+        return
+
+    mark_robot_moved("command 0x{:X}".format(packet[0]))
+
+
 def send_command(sock, packet):
     try:
         sock.sendall(packet)
         print("Sent:", packet_preview(packet))
-        return recv_response(sock)
+        ok = recv_response(sock)
+
+        if ok:
+            _mark_debug_capture_robot_moved(packet)
+
+        return ok
 
     except OSError as exc:
         print("Send error:", exc)

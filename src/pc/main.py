@@ -19,6 +19,7 @@ from com_protocol import HOST, PORT, build_handshake, build_mapsize, send_comman
 from delivery import deliver_held_ball_to_goal
 from id_color import ball_pos_approx_shape, goals_pos_approx, grapler_pos_approx, robot_pose_approx
 from Imagesplitter import create_matrix
+from path_obstacles import clear_path_endpoint, mark_red_cross_obstacles
 from pickup import approach_ball_and_close_claw
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
@@ -27,11 +28,11 @@ from settings import (
     EV3_MAP_WIDTH,
     FRAME_CAPTURE_INTERVAL_SECONDS,
     IMAGE_DIR,
-    MAP_HEIGHT,
-    MAP_WIDTH,
+    PICKUP_BALL_COLORS,
     STARTUP_DELAY_SECONDS,
     STOP_AFTER_SUCCESSFUL_DELIVERY,
 )
+from vision_debug_capture import save_missing_detection_frame
 from vision_detection import vision_live_view_quit_requested
 
 
@@ -69,6 +70,7 @@ def capture_color_matrix(state, warped_frame):
 def capture_detection_scene(state, warped_frame):
     color_matrix = capture_color_matrix(state, warped_frame)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
+    save_missing_detection_frame(warped_frame, vision_scene, "main")
 
     return {
         "color_matrix": color_matrix,
@@ -76,53 +78,69 @@ def capture_detection_scene(state, warped_frame):
     }
 
 
-def clear_path_endpoint(color_matrix, point, radius=5, value="."):
-    if point is None:
-        return
-
-    row, col = point
-    row = int(round(row))
-    col = int(round(col))
-
-    for current_row in range(max(0, row - radius), min(MAP_HEIGHT, row + radius + 1)):
-        for current_col in range(max(0, col - radius), min(MAP_WIDTH, col + radius + 1)):
-            color_matrix[current_row][current_col] = value
-
-
-def prepare_pickup_path_matrix(color_matrix, grapler_point, ball_point):
+def prepare_pickup_path_matrix(color_matrix, grapler_point, ball_point, vision_scene=None):
+    mark_red_cross_obstacles(color_matrix, vision_scene)
     clear_path_endpoint(color_matrix, grapler_point, radius=8, value=".")
     clear_path_endpoint(color_matrix, ball_point, radius=5, value="W")
     return color_matrix
 
 
-def sort_balls_by_distance_to_grappler(balls, grapler_point):
-    min_list = []
+def sort_balls_by_distance_to_grappler(ball_targets, grapler_point):
+    paired_targets = []
 
-    for item in balls:
-        value = get_h_list(grapler_point[0], grapler_point[1], item[0], item[1])
-        min_list.append(value)
+    for target in ball_targets:
+        point = target["point"]
+        distance = get_h_list(grapler_point[0], grapler_point[1], point[0], point[1])[0]
+        paired_targets.append((distance, target))
 
-    print("minlist", min_list)
+    paired_targets.sort(key=lambda item: item[0])
+    sorted_targets = [target for _distance, target in paired_targets]
 
-    paired = list(zip(min_list, balls))
-    paired.sort()
-    sorted_balls = [item for _, item in paired]
+    print(
+        "Pickup ball targets by distance:",
+        [
+            "{}@{}:{:.1f}".format(target["color"], target["point"], distance)
+            for distance, target in paired_targets
+        ],
+    )
+    return sorted_targets
 
-    print("white_list", sorted_balls)
-    return sorted_balls
+
+def detect_ball_points_for_color(color_matrix, vision_scene, ball_color):
+    ball_points = []
+
+    if vision_scene is not None:
+        ball_points = vision_scene.ball_points(ball_color)
+
+        if ball_points:
+            print("Vision {} balls: {}".format(ball_color, ball_points))
+
+    if not ball_points and ALLOW_COLOR_DETECTION_FALLBACK:
+        ball_points = ball_pos_approx_shape(color_matrix, ball_color)
+
+        if ball_points:
+            print("Color fallback {} balls: {}".format(ball_color, ball_points))
+
+    return ball_points
+
+
+def detect_pickup_ball_targets(color_matrix, vision_scene=None):
+    ball_targets = []
+
+    for ball_color in PICKUP_BALL_COLORS:
+        for point in detect_ball_points_for_color(color_matrix, vision_scene, ball_color):
+            ball_targets.append(
+                {
+                    "color": ball_color,
+                    "point": point,
+                }
+            )
+
+    return ball_targets
 
 
 def detect_pickup_target(color_matrix, vision_scene=None):
-    white_list = []
-
-    if vision_scene is not None:
-        white_list = vision_scene.ball_points("W")
-
-        if white_list:
-            print("Vision white balls:", white_list)
-
-    if not white_list and ALLOW_COLOR_DETECTION_FALLBACK:
-        white_list = ball_pos_approx_shape(color_matrix, "W")
+    ball_targets = detect_pickup_ball_targets(color_matrix, vision_scene)
 
     grapler_point = None
 
@@ -165,18 +183,34 @@ def detect_pickup_target(color_matrix, vision_scene=None):
         print("No robot pose detected; cannot collect ball")
         return None
 
-    if not white_list:
-        print("No white balls detected")
+    if not ball_targets:
+        print("No pickup balls detected for colors {}".format(PICKUP_BALL_COLORS))
         return None
 
-    white_list = sort_balls_by_distance_to_grappler(white_list, grapler_point)
-    pickup_matrix = prepare_pickup_path_matrix(color_matrix, grapler_point, white_list[0])
-    robot_path = A_star(pickup_matrix, grapler_point, white_list[0])
+    ball_targets = sort_balls_by_distance_to_grappler(ball_targets, grapler_point)
+    selected_ball = ball_targets[0]
+    selected_ball_point = selected_ball["point"]
+    selected_ball_color = selected_ball["color"]
+    print(
+        "Selected pickup target: color={}, point={}".format(
+            selected_ball_color,
+            selected_ball_point,
+        )
+    )
+    pickup_matrix = prepare_pickup_path_matrix(
+        color_matrix,
+        grapler_point,
+        selected_ball_point,
+        vision_scene,
+    )
+    robot_path = A_star(pickup_matrix, grapler_point, selected_ball_point)
 
     return {
         "grapler_point": grapler_point,
         "robot_pose": current_robot_pose,
         "robot_path": robot_path,
+        "ball_color": selected_ball_color,
+        "ball_point": selected_ball_point,
     }
 
 
@@ -191,6 +225,7 @@ def handle_pickup_and_delivery(sock, camera, state, color_matrix, pickup_target)
         pickup_target["robot_path"],
         current_grappler_point=pickup_target["grapler_point"],
         current_robot_pose=pickup_target["robot_pose"],
+        ball_color=pickup_target["ball_color"],
         open_claw=not state.pickup_started,
     )
 

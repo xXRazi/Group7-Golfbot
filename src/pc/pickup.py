@@ -21,8 +21,16 @@ from map_utils import (
     simplify_path_for_robot,
     truncate_path_before_target,
 )
+from path_obstacles import (
+    clear_path_endpoint,
+    clone_path_matrix,
+    mark_red_cross_obstacles,
+    red_cross_obstacle_regions,
+    segment_intersects_regions,
+)
 from robot_sync import (
     goto_then_sync,
+    goto_map_point_with_pose_pre_turn,
     map_xy_to_ev3_xy,
     normalize_turn_angle,
     sync_robot_from_camera,
@@ -59,6 +67,7 @@ from settings import (
     SYNC_DELAY_SECONDS,
     USE_COARSE_PICKUP_PREAPPROACH,
 )
+from vision_debug_capture import save_missing_detection_frame
 
 
 def estimate_grappler_offset(robot_pose, grappler_point):
@@ -241,6 +250,73 @@ def follow_path_with_camera_sync(sock, camera, robot_path, step_size=10):
     return True
 
 
+def path_point_at_distance(robot_path, target_distance):
+    if not path_is_valid(robot_path):
+        return None
+
+    if len(robot_path) == 1:
+        return robot_path[0]
+
+    target_distance = max(0.0, float(target_distance))
+    travelled = 0.0
+
+    for index in range(1, len(robot_path)):
+        previous_point = robot_path[index - 1]
+        current_point = robot_path[index]
+        segment_length = point_distance(previous_point, current_point)
+
+        if travelled + segment_length >= target_distance:
+            if segment_length <= 0.001:
+                return current_point
+
+            ratio = (target_distance - travelled) / segment_length
+            row = previous_point[0] + (current_point[0] - previous_point[0]) * ratio
+            col = previous_point[1] + (current_point[1] - previous_point[1]) * ratio
+            return int(round(row)), int(round(col))
+
+        travelled += segment_length
+
+    return robot_path[-1]
+
+
+def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_units):
+    if scene is None:
+        return None
+
+    color_matrix = scene.get("color_matrix")
+    vision_scene = scene.get("vision_scene")
+    regions = red_cross_obstacle_regions(color_matrix, vision_scene)
+
+    if not segment_intersects_regions(start_point, target_point, regions):
+        return None
+
+    path_matrix = clone_path_matrix(color_matrix)
+    mark_red_cross_obstacles(path_matrix, vision_scene)
+    clear_path_endpoint(path_matrix, start_point, radius=10, value=".")
+    clear_path_endpoint(path_matrix, target_point, radius=10, value=".")
+    robot_path = A_star(path_matrix, start_point, target_point)
+
+    if not path_is_valid(robot_path):
+        print(
+            "Pickup servo: red cross blocks direct step, but A* could not find a safe route: {}".format(
+                robot_path,
+            )
+        )
+        return False
+
+    step_target = path_point_at_distance(robot_path, distance_map_units)
+
+    if step_target is None:
+        return False
+
+    print(
+        "Pickup servo: red cross blocks direct step; routing next step via {}".format(
+            step_target,
+        )
+    )
+    return step_target
+
+
 def choose_closest_ball_to_grappler(balls, grappler_point):
     if not balls or grappler_point is None:
         return None
@@ -290,6 +366,7 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
 
     color_matrix = create_matrix_from_frame(warped_frame)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
+    save_missing_detection_frame(warped_frame, vision_scene, "pickup")
 
     robot_pose = None
     if vision_scene is not None:
@@ -378,7 +455,7 @@ def pickup_servo_forward_step(center_to_ball):
     return min(PICKUP_SERVO_MAX_FORWARD_STEP, PICKUP_SERVO_NEAR_FORWARD_STEP)
 
 
-def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_units):
+def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_units, scene=None):
     """
     Move the robot center a short distance toward target_point.
 
@@ -393,11 +470,24 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
         return True
 
     distance_map_units = float(distance_map_units)
-    unit_row = (float(target_point[0]) - float(center_point[0])) / distance_to_target
-    unit_col = (float(target_point[1]) - float(center_point[1])) / distance_to_target
+    routed_step = red_cross_routed_pickup_step(
+        scene,
+        center_point,
+        target_point,
+        distance_map_units,
+    )
 
-    target_row = int(round(float(center_point[0]) + distance_map_units * unit_row))
-    target_col = int(round(float(center_point[1]) + distance_map_units * unit_col))
+    if routed_step is False:
+        return False
+
+    if routed_step is not None:
+        target_row, target_col = routed_step
+    else:
+        unit_row = (float(target_point[0]) - float(center_point[0])) / distance_to_target
+        unit_col = (float(target_point[1]) - float(center_point[1])) / distance_to_target
+
+        target_row = int(round(float(center_point[0]) + distance_map_units * unit_row))
+        target_col = int(round(float(center_point[1]) + distance_map_units * unit_col))
 
     if not map_point_is_valid((target_row, target_col)):
         clamped_row, clamped_col = clamp_map_point((target_row, target_col), margin=5)
@@ -410,6 +500,15 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
             )
         )
         target_row, target_col = clamped_row, clamped_col
+
+    if routed_step is not None:
+        return goto_map_point_with_pose_pre_turn(
+            sock,
+            camera,
+            robot_pose,
+            (target_row, target_col),
+            label="Pickup red-cross routed step",
+        )
 
     print(
         "Pickup servo: center->ball distance={:.1f}; moving {:.1f} to map center=({}, {})".format(
@@ -585,7 +684,14 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             )
         )
 
-        if not drive_toward_map_point(sock, camera, robot_pose, ball_point, forward_distance):
+        if not drive_toward_map_point(
+            sock,
+            camera,
+            robot_pose,
+            ball_point,
+            forward_distance,
+            scene=scene,
+        ):
             return False
 
     final_scene = capture_pickup_scene(camera, ball_color=ball_color)
@@ -714,6 +820,7 @@ def approach_ball_and_close_claw(
     grappler_to_ball_path,
     current_grappler_point=None,
     current_robot_pose=None,
+    ball_color="W",
     open_claw=True,
 ):
     """
@@ -759,7 +866,7 @@ def approach_ball_and_close_claw(
         ):
             return False
 
-    if not servo_align_and_approach_ball(sock, camera, ball_color="W"):
+    if not servo_align_and_approach_ball(sock, camera, ball_color=ball_color):
         print("Pickup servo failed; not closing claw blindly")
         return False
 
