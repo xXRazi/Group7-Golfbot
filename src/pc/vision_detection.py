@@ -64,6 +64,13 @@ class VisionScene:
     def detections_for(self, kind):
         return [detection for detection in self.detections if detection.kind == kind]
 
+    def detections_for_class(self, class_name):
+        normalized_name = _normalize_class_name(class_name)
+        return [
+            detection for detection in self.detections
+            if _normalize_class_name(detection.class_name) == normalized_name
+        ]
+
     def best(self, kind):
         candidates = self.detections_for(kind)
 
@@ -71,6 +78,17 @@ class VisionScene:
             return None
 
         return max(candidates, key=lambda detection: detection.confidence)
+
+    def open_claw_detection(self):
+        candidates = self.detections_for_class("openclaw")
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda detection: detection.confidence)
+
+    def open_claw_visible(self):
+        return self.open_claw_detection() is not None
 
     def _bbox_matches_map_coordinates(self, detection, tolerance=3.0):
         x1, y1, x2, y2 = detection.bbox

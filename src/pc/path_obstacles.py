@@ -1,6 +1,11 @@
 import math
 
-from settings import RED_CROSS_AVOIDANCE_ENABLED, RED_CROSS_OBSTACLE_MARGIN
+from settings import (
+    RED_CROSS_AVOIDANCE_ENABLED,
+    RED_CROSS_OBSTACLE_ARM_RATIO,
+    RED_CROSS_OBSTACLE_MARGIN,
+    RED_CROSS_OBSTACLE_MIN_ARM_WIDTH,
+)
 
 
 RED_CROSS_BLOCKED_VALUE = "X"
@@ -24,6 +29,48 @@ def clear_path_endpoint(color_matrix, point, radius=5, value="."):
     for current_row in range(max(0, row - radius), min(row_count, row + radius + 1)):
         for current_col in range(max(0, col - radius), min(col_count, col + radius + 1)):
             color_matrix[current_row][current_col] = value
+
+
+def point_in_obstacle_regions(point, regions):
+    if point is None or not regions:
+        return False
+
+    row, col = point
+    row = float(row)
+    col = float(col)
+
+    for top, left, bottom, right in regions:
+        if top <= row <= bottom and left <= col <= right:
+            return True
+
+    return False
+
+
+def clear_path_endpoint_preserving_obstacles(
+    color_matrix,
+    original_matrix,
+    point,
+    radius=5,
+    value=".",
+    allowed_original_values=(".", "W", "O"),
+    blocked_regions=None,
+):
+    if point is None or not color_matrix or not original_matrix:
+        return
+
+    row_count = len(color_matrix)
+    col_count = len(color_matrix[0])
+    row, col = point
+    row = int(round(row))
+    col = int(round(col))
+    radius = max(0, int(round(radius)))
+
+    for current_row in range(max(0, row - radius), min(row_count, row + radius + 1)):
+        for current_col in range(max(0, col - radius), min(col_count, col + radius + 1)):
+            if point_in_obstacle_regions((current_row, current_col), blocked_regions):
+                continue
+            if original_matrix[current_row][current_col] in allowed_original_values:
+                color_matrix[current_row][current_col] = value
 
 
 def _bbox_center_matches_point(detection, tolerance=5.0):
@@ -50,23 +97,92 @@ def _clamp_region(top, left, bottom, right, row_count, col_count):
     return top, left, bottom, right
 
 
-def _red_cross_region(detection, row_count, col_count, margin):
+def _region_from_floats(top, left, bottom, right, row_count, col_count):
+    return _clamp_region(
+        math.floor(top),
+        math.floor(left),
+        math.ceil(bottom),
+        math.ceil(right),
+        row_count,
+        col_count,
+    )
+
+
+def _red_cross_regions_from_bbox(detection, row_count, col_count, margin):
+    x1, y1, x2, y2 = detection.bbox
+    top = min(float(y1), float(y2))
+    bottom = max(float(y1), float(y2))
+    left = min(float(x1), float(x2))
+    right = max(float(x1), float(x2))
+    center_row = (top + bottom) / 2.0
+    center_col = (left + right) / 2.0
+    width = max(1.0, right - left)
+    height = max(1.0, bottom - top)
+    arm_ratio = max(0.05, min(1.0, float(RED_CROSS_OBSTACLE_ARM_RATIO)))
+    arm_width = max(
+        float(RED_CROSS_OBSTACLE_MIN_ARM_WIDTH),
+        min(width, height) * arm_ratio,
+    )
+    half_arm_width = arm_width / 2.0
+
+    vertical_arm = _region_from_floats(
+        top - margin,
+        center_col - half_arm_width - margin,
+        bottom + margin,
+        center_col + half_arm_width + margin,
+        row_count,
+        col_count,
+    )
+    horizontal_arm = _region_from_floats(
+        center_row - half_arm_width - margin,
+        left - margin,
+        center_row + half_arm_width + margin,
+        right + margin,
+        row_count,
+        col_count,
+    )
+
+    return [
+        region for region in (vertical_arm, horizontal_arm)
+        if region is not None
+    ]
+
+
+def _red_cross_regions_from_point(detection, row_count, col_count, margin):
+    point_row, point_col = detection.point
+    half_length = max(float(margin), float(RED_CROSS_OBSTACLE_MIN_ARM_WIDTH))
+    half_arm_width = max(1.0, float(RED_CROSS_OBSTACLE_MIN_ARM_WIDTH) / 2.0)
+
+    vertical_arm = _region_from_floats(
+        float(point_row) - half_length - margin,
+        float(point_col) - half_arm_width - margin,
+        float(point_row) + half_length + margin,
+        float(point_col) + half_arm_width + margin,
+        row_count,
+        col_count,
+    )
+    horizontal_arm = _region_from_floats(
+        float(point_row) - half_arm_width - margin,
+        float(point_col) - half_length - margin,
+        float(point_row) + half_arm_width + margin,
+        float(point_col) + half_length + margin,
+        row_count,
+        col_count,
+    )
+
+    return [
+        region for region in (vertical_arm, horizontal_arm)
+        if region is not None
+    ]
+
+
+def _red_cross_regions(detection, row_count, col_count, margin):
     margin = max(0, int(round(margin)))
 
     if _bbox_center_matches_point(detection):
-        x1, y1, x2, y2 = detection.bbox
-        top = math.floor(min(float(y1), float(y2))) - margin
-        bottom = math.ceil(max(float(y1), float(y2))) + margin
-        left = math.floor(min(float(x1), float(x2))) - margin
-        right = math.ceil(max(float(x1), float(x2))) + margin
-    else:
-        point_row, point_col = detection.point
-        top = int(round(point_row)) - margin
-        bottom = int(round(point_row)) + margin
-        left = int(round(point_col)) - margin
-        right = int(round(point_col)) + margin
+        return _red_cross_regions_from_bbox(detection, row_count, col_count, margin)
 
-    return _clamp_region(top, left, bottom, right, row_count, col_count)
+    return _red_cross_regions_from_point(detection, row_count, col_count, margin)
 
 
 def red_cross_obstacle_regions(
@@ -87,10 +203,7 @@ def red_cross_obstacle_regions(
     regions = []
 
     for detection in vision_scene.detections_for("redcross"):
-        region = _red_cross_region(detection, row_count, col_count, margin)
-
-        if region is not None:
-            regions.append(region)
+        regions.extend(_red_cross_regions(detection, row_count, col_count, margin))
 
     return regions
 
@@ -139,7 +252,7 @@ def mark_red_cross_obstacles(
 
     if regions:
         print(
-            "Red cross avoidance: marked {} obstacle region(s) with margin {} map units".format(
+            "Red cross avoidance: marked {} obstacle arm(s) with margin {} map units".format(
                 len(regions),
                 int(round(margin)),
             )

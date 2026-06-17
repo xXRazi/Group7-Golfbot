@@ -41,7 +41,7 @@ def loop(conn, command_handler, motor_controller):
             print("Received raw bytes length:", len(command_bytes))
             print("Received raw bytes preview:", list(command_bytes[:40]))
 
-            conn.sendall(b"EV3 got command\n")
+            conn.sendall(command_handler.last_response.encode("utf-8"))
 
 
 def main():

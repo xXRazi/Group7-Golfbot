@@ -88,7 +88,12 @@ def recv_response(sock):
             print("Robot closed the connection")
             return False
 
-        print("Robot:", data.decode("utf-8", errors="replace").strip())
+        response = data.decode("utf-8", errors="replace").strip()
+        print("Robot:", response)
+
+        if response.startswith("ERR"):
+            return False
+
         return True
 
     except OSError as exc:

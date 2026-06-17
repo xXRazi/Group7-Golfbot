@@ -3,7 +3,13 @@ import time
 
 from camera import create_matrix_from_frame, detect_vision_from_warped_frame, read_arena_frame
 from collection_algorithm import A_star
-from com_protocol import build_claw_deliver, build_setspeed, build_turn, send_command
+from com_protocol import (
+    build_claw_close,
+    build_claw_deliver,
+    build_setspeed,
+    build_turn,
+    send_command,
+)
 from id_color import color_blobs, robot_pose_approx
 from map_utils import (
     clamp_map_point,
@@ -12,7 +18,13 @@ from map_utils import (
     robot_center_point,
     simplify_path_for_robot,
 )
-from path_obstacles import clear_path_endpoint, clone_path_matrix, mark_red_cross_obstacles
+from path_obstacles import (
+    clear_path_endpoint,
+    clone_path_matrix,
+    mark_red_cross_obstacles,
+    red_cross_obstacle_regions,
+    segment_intersects_regions,
+)
 from robot_sync import (
     goto_then_sync_with_pre_turn,
     goto_map_point_with_pose,
@@ -40,6 +52,8 @@ from settings import (
     DELIVERY_ROBOT_EDGE_MARGIN,
     DELIVERY_USE_FIXED_GOALS,
     DELIVERY_WAYPOINT_STEP_SIZE,
+    HELD_CLAW_RECLOSE_DELAY_SECONDS,
+    HELD_CLAW_RECLOSE_ENABLED,
     MAP_HEIGHT,
     MAP_WIDTH,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
@@ -124,6 +138,60 @@ def capture_delivery_scene(camera, retry_frames=ROBOT_POSE_RETRY_FRAMES):
 
     print("Delivery camera: robot pose still missing after {} frames".format(attempts))
     return last_scene
+
+
+def open_claw_detection_in_scene(scene):
+    if scene is None:
+        return None
+
+    vision_scene = scene.get("vision_scene")
+
+    if vision_scene is None:
+        return None
+
+    return vision_scene.open_claw_detection()
+
+
+def ensure_held_claw_closed(sock, camera, scene, label="Delivery"):
+    if not HELD_CLAW_RECLOSE_ENABLED:
+        return scene
+
+    detection = open_claw_detection_in_scene(scene)
+
+    if detection is None:
+        return scene
+
+    print(
+        "{}: vision sees open_claw at {} ({:.2f}) while claw should be closed; sending CLAW_CLOSE".format(
+            label,
+            detection.point,
+            detection.confidence,
+        )
+    )
+
+    if not send_command(sock, build_claw_close()):
+        return None
+
+    time.sleep(HELD_CLAW_RECLOSE_DELAY_SECONDS)
+
+    refreshed_scene = capture_delivery_scene(camera)
+
+    if refreshed_scene is None:
+        print("{}: could not refresh camera after re-closing claw; continuing with previous frame".format(label))
+        return scene
+
+    refreshed_detection = open_claw_detection_in_scene(refreshed_scene)
+
+    if refreshed_detection is not None:
+        print(
+            "{}: open_claw is still visible after close command at {} ({:.2f})".format(
+                label,
+                refreshed_detection.point,
+                refreshed_detection.confidence,
+            )
+        )
+
+    return refreshed_scene
 
 
 def delivery_goal_marker_blob_is_valid(blob):
@@ -487,6 +555,27 @@ def delivery_path_matrix(scene, start_point, target_point):
     return path_matrix, red_cross_count
 
 
+def delivery_direct_path_crosses_red_cross(scene, start_point, target_point):
+    color_matrix = scene.get("color_matrix") if scene is not None else None
+    vision_scene = scene.get("vision_scene") if scene is not None else None
+    regions = red_cross_obstacle_regions(color_matrix, vision_scene)
+
+    if not regions:
+        return False
+
+    crosses_red_cross = segment_intersects_regions(start_point, target_point, regions)
+
+    if not crosses_red_cross:
+        print(
+            "Delivery waypoint: direct segment {} -> {} does not cross red cross; using direct GOTO".format(
+                start_point,
+                target_point,
+            )
+        )
+
+    return crosses_red_cross
+
+
 def follow_delivery_path(sock, camera, robot_pose, robot_path, label):
     if not path_is_valid(robot_path):
         print("{}: invalid path {}".format(label, robot_path))
@@ -533,6 +622,9 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
     if point_distance(start_point, target_point) <= 2.0:
         print("{}: already at target {}".format(label, target_point))
         return sync_robot_pose_value(sock, robot_pose, label="{} already-at-target".format(label))
+
+    if not delivery_direct_path_crosses_red_cross(scene, start_point, target_point):
+        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
 
     path_matrix, red_cross_count = delivery_path_matrix(scene, start_point, target_point)
 
@@ -606,6 +698,16 @@ def move_to_safe_delivery_staging(sock, camera, scene):
             if refreshed_scene is None or refreshed_scene["robot_pose"] is None:
                 return robot_pose
 
+            refreshed_scene = ensure_held_claw_closed(
+                sock,
+                camera,
+                refreshed_scene,
+                label="Delivery safety",
+            )
+
+            if refreshed_scene is None or refreshed_scene["robot_pose"] is None:
+                return robot_pose
+
             scene = refreshed_scene
             robot_pose = scene["robot_pose"]
             grappler_point = scene["grappler_point"]
@@ -650,11 +752,17 @@ def move_to_safe_delivery_staging(sock, camera, scene):
     return sync_robot_pose_from_camera(sock, camera)
 
 
-def choose_fresh_delivery_option(camera, goal_name):
+def choose_fresh_delivery_option(sock, camera, goal_name):
     scene = capture_delivery_scene(camera)
 
     if scene is None:
         print("Delivery verify: could not read camera frame")
+        return None, None, None
+
+    scene = ensure_held_claw_closed(sock, camera, scene, label="Delivery verify")
+
+    if scene is None:
+        print("Delivery verify: could not close claw after open_claw detection")
         return None, None, None
 
     robot_pose = scene["robot_pose"]
@@ -678,7 +786,7 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
     option = initial_option
 
     for attempt in range(1, DELIVERY_FINAL_CORRECTION_ATTEMPTS + 2):
-        robot_pose, grappler_point, fresh_option = choose_fresh_delivery_option(camera, goal_name)
+        robot_pose, grappler_point, fresh_option = choose_fresh_delivery_option(sock, camera, goal_name)
 
         if robot_pose is None:
             return False
@@ -796,6 +904,12 @@ def deliver_held_ball_to_goal(sock, camera):
         print("Delivery: could not read camera frame")
         return False
 
+    scene = ensure_held_claw_closed(sock, camera, scene, label="Delivery start")
+
+    if scene is None:
+        print("Delivery: could not close claw after open_claw detection")
+        return False
+
     robot_pose = scene["robot_pose"]
     goals = scene["goals"]
 
@@ -817,6 +931,12 @@ def deliver_held_ball_to_goal(sock, camera):
 
     if scene is None:
         print("Delivery: could not refresh camera frame after safety staging")
+        return False
+
+    scene = ensure_held_claw_closed(sock, camera, scene, label="Delivery after safety staging")
+
+    if scene is None:
+        print("Delivery: could not close claw after safety staging")
         return False
 
     robot_pose = scene["robot_pose"]

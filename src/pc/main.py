@@ -19,7 +19,15 @@ from com_protocol import HOST, PORT, build_handshake, build_mapsize, send_comman
 from delivery import deliver_held_ball_to_goal
 from id_color import ball_pos_approx_shape, goals_pos_approx, grapler_pos_approx, robot_pose_approx
 from Imagesplitter import create_matrix
-from path_obstacles import clear_path_endpoint, mark_red_cross_obstacles
+from map_utils import path_is_valid
+from path_obstacles import (
+    clear_path_endpoint,
+    clear_path_endpoint_preserving_obstacles,
+    clone_path_matrix,
+    mark_red_cross_obstacles,
+    point_in_obstacle_regions,
+    red_cross_obstacle_regions,
+)
 from pickup import approach_ball_and_close_claw
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
@@ -29,6 +37,8 @@ from settings import (
     FRAME_CAPTURE_INTERVAL_SECONDS,
     IMAGE_DIR,
     PICKUP_BALL_COLORS,
+    PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
+    PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     STARTUP_DELAY_SECONDS,
     STOP_AFTER_SUCCESSFUL_DELIVERY,
 )
@@ -79,10 +89,44 @@ def capture_detection_scene(state, warped_frame):
 
 
 def prepare_pickup_path_matrix(color_matrix, grapler_point, ball_point, vision_scene=None):
-    mark_red_cross_obstacles(color_matrix, vision_scene)
-    clear_path_endpoint(color_matrix, grapler_point, radius=8, value=".")
-    clear_path_endpoint(color_matrix, ball_point, radius=5, value="W")
-    return color_matrix
+    path_matrix = clone_path_matrix(color_matrix)
+    pickup_cross_regions = red_cross_obstacle_regions(
+        color_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
+    mark_red_cross_obstacles(
+        path_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
+    clear_path_endpoint(path_matrix, grapler_point, radius=8, value=".")
+    clear_pickup_ball_endpoint(
+        path_matrix,
+        color_matrix,
+        ball_point,
+        radius=PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
+        blocked_regions=pickup_cross_regions,
+    )
+    return path_matrix
+
+
+def clear_pickup_ball_endpoint(
+    path_matrix,
+    original_matrix,
+    ball_point,
+    radius,
+    value="W",
+    blocked_regions=None,
+):
+    clear_path_endpoint_preserving_obstacles(
+        path_matrix,
+        original_matrix,
+        ball_point,
+        radius=radius,
+        value=value,
+        blocked_regions=blocked_regions,
+    )
 
 
 def sort_balls_by_distance_to_grappler(ball_targets, grapler_point):
@@ -188,30 +232,61 @@ def detect_pickup_target(color_matrix, vision_scene=None):
         return None
 
     ball_targets = sort_balls_by_distance_to_grappler(ball_targets, grapler_point)
-    selected_ball = ball_targets[0]
-    selected_ball_point = selected_ball["point"]
-    selected_ball_color = selected_ball["color"]
-    print(
-        "Selected pickup target: color={}, point={}".format(
-            selected_ball_color,
-            selected_ball_point,
-        )
-    )
-    pickup_matrix = prepare_pickup_path_matrix(
+    pickup_cross_regions = red_cross_obstacle_regions(
         color_matrix,
-        grapler_point,
-        selected_ball_point,
         vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     )
-    robot_path = A_star(pickup_matrix, grapler_point, selected_ball_point)
 
-    return {
-        "grapler_point": grapler_point,
-        "robot_pose": current_robot_pose,
-        "robot_path": robot_path,
-        "ball_color": selected_ball_color,
-        "ball_point": selected_ball_point,
-    }
+    for selected_ball in ball_targets:
+        selected_ball_point = selected_ball["point"]
+        selected_ball_color = selected_ball["color"]
+
+        if point_in_obstacle_regions(selected_ball_point, pickup_cross_regions):
+            print(
+                "Skipping pickup target color={}, point={}: too close to red cross for grappler clearance".format(
+                    selected_ball_color,
+                    selected_ball_point,
+                )
+            )
+            continue
+
+        pickup_matrix = prepare_pickup_path_matrix(
+            color_matrix,
+            grapler_point,
+            selected_ball_point,
+            vision_scene,
+        )
+        robot_path = A_star(pickup_matrix, grapler_point, selected_ball_point)
+
+        if not path_is_valid(robot_path):
+            print(
+                "Skipping pickup target color={}, point={}: no valid path ({})".format(
+                    selected_ball_color,
+                    selected_ball_point,
+                    robot_path,
+                )
+            )
+            continue
+
+        print(
+            "Selected pickup target: color={}, point={}, path_points={}".format(
+                selected_ball_color,
+                selected_ball_point,
+                len(robot_path),
+            )
+        )
+
+        return {
+            "grapler_point": grapler_point,
+            "robot_pose": current_robot_pose,
+            "robot_path": robot_path,
+            "ball_color": selected_ball_color,
+            "ball_point": selected_ball_point,
+        }
+
+    print("No reachable pickup balls found; all detected targets were blocked")
+    return None
 
 
 def handle_pickup_and_delivery(sock, camera, state, color_matrix, pickup_target):

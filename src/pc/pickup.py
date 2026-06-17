@@ -23,8 +23,10 @@ from map_utils import (
 )
 from path_obstacles import (
     clear_path_endpoint,
+    clear_path_endpoint_preserving_obstacles,
     clone_path_matrix,
     mark_red_cross_obstacles,
+    point_in_obstacle_regions,
     red_cross_obstacle_regions,
     segment_intersects_regions,
 )
@@ -43,6 +45,7 @@ from settings import (
     GRAPPLER_LATERAL_OFFSET_FALLBACK,
     MAP_HEIGHT,
     MAP_WIDTH,
+    PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
     PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE,
     PICKUP_CENTER_TO_BALL_MARGIN,
     PICKUP_FINAL_HEADING_CLOSE_TOLERANCE,
@@ -53,6 +56,7 @@ from settings import (
     PICKUP_OFFCENTER_DISTANCE_SCALE,
     PICKUP_OFFCENTER_SCOOP_SCALE_LIMIT,
     PICKUP_PREAPPROACH_DISTANCE,
+    PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     PICKUP_SERVO_FAR_FORWARD_STEP,
     PICKUP_SERVO_MAX_FORWARD_STEP,
     PICKUP_SERVO_MAX_ITERATIONS,
@@ -285,15 +289,30 @@ def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_
 
     color_matrix = scene.get("color_matrix")
     vision_scene = scene.get("vision_scene")
-    regions = red_cross_obstacle_regions(color_matrix, vision_scene)
+    regions = red_cross_obstacle_regions(
+        color_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
 
     if not segment_intersects_regions(start_point, target_point, regions):
         return None
 
     path_matrix = clone_path_matrix(color_matrix)
-    mark_red_cross_obstacles(path_matrix, vision_scene)
+    mark_red_cross_obstacles(
+        path_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
     clear_path_endpoint(path_matrix, start_point, radius=10, value=".")
-    clear_path_endpoint(path_matrix, target_point, radius=10, value=".")
+    clear_path_endpoint_preserving_obstacles(
+        path_matrix,
+        color_matrix,
+        target_point,
+        radius=PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
+        value=".",
+        blocked_regions=regions,
+    )
     robot_path = A_star(path_matrix, start_point, target_point)
 
     if not path_is_valid(robot_path):
@@ -322,6 +341,34 @@ def choose_closest_ball_to_grappler(balls, grappler_point):
         return None
 
     return min(balls, key=lambda ball: point_distance(ball, grappler_point))
+
+
+def filter_balls_for_red_cross_clearance(color_matrix, vision_scene, balls):
+    regions = red_cross_obstacle_regions(
+        color_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
+
+    if not regions:
+        return balls, []
+
+    safe_balls = []
+    blocked_balls = []
+
+    for ball in balls:
+        if point_in_obstacle_regions(ball, regions):
+            print(
+                "Pickup camera: ignoring ball {} because it is too close to the red cross".format(
+                    ball,
+                )
+            )
+            blocked_balls.append(ball)
+            continue
+
+        safe_balls.append(ball)
+
+    return safe_balls, blocked_balls
 
 
 def pickup_offcenter_ratio(point):
@@ -395,6 +442,11 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
     if not balls and ALLOW_COLOR_DETECTION_FALLBACK:
         balls = ball_pos_approx_shape(color_matrix, ball_color)
 
+    balls, blocked_balls = filter_balls_for_red_cross_clearance(
+        color_matrix,
+        vision_scene,
+        balls,
+    )
     ball_point = choose_closest_ball_to_grappler(balls, grappler_point)
 
     return {
@@ -403,6 +455,8 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
         "robot_pose": robot_pose,
         "grappler_point": grappler_point,
         "balls": balls,
+        "blocked_balls": blocked_balls,
+        "pickup_blocked_by_red_cross": bool(blocked_balls and not balls),
         "ball_point": ball_point,
     }
 
@@ -532,7 +586,63 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
     return sync_robot_from_camera(sock, camera)
 
 
-def final_scoop_forward_before_close(sock, camera, robot_pose, distance_map_units=PICKUP_FINAL_SCOOP_DISTANCE):
+def final_scoop_is_safe_from_red_cross(scene, robot_pose, target_point):
+    if scene is None:
+        return True
+
+    color_matrix = scene.get("color_matrix")
+    vision_scene = scene.get("vision_scene")
+    regions = red_cross_obstacle_regions(
+        color_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
+
+    if not regions:
+        return True
+
+    center_x, center_y, _heading = robot_pose
+    center_point = (int(round(center_y)), int(round(center_x)))
+    grappler_point = scene.get("grappler_point")
+    ball_point = scene.get("ball_point")
+
+    for label, point in (
+        ("robot center", center_point),
+        ("grappler", grappler_point),
+        ("ball", ball_point),
+    ):
+        if point_in_obstacle_regions(point, regions):
+            print(
+                "Pickup final scoop: refusing to move because {} {} is inside the red-cross pickup clearance".format(
+                    label,
+                    point,
+                )
+            )
+            return False
+
+    if grappler_point is not None and ball_point is not None:
+        if segment_intersects_regions(grappler_point, ball_point, regions):
+            print(
+                "Pickup final scoop: refusing to close because the grappler-to-ball line crosses the red-cross pickup clearance"
+            )
+            return False
+
+    if segment_intersects_regions(center_point, target_point, regions):
+        print(
+            "Pickup final scoop: refusing forward move because it crosses the red-cross pickup clearance"
+        )
+        return False
+
+    return True
+
+
+def final_scoop_forward_before_close(
+    sock,
+    camera,
+    robot_pose,
+    distance_map_units=PICKUP_FINAL_SCOOP_DISTANCE,
+    scene=None,
+):
     """Move a small distance straight forward to put the ball inside the fingers."""
     if distance_map_units <= 0.0:
         return True
@@ -545,6 +655,10 @@ def final_scoop_forward_before_close(sock, camera, robot_pose, distance_map_unit
     target_row, target_col = clamp_map_point((target_y, target_x), margin=5)
     target_x = target_col
     target_y = target_row
+    target_point = (target_y, target_x)
+
+    if not final_scoop_is_safe_from_red_cross(scene, robot_pose, target_point):
+        return False
 
     print(
         "Pickup final scoop: moving forward {:.1f} map units to map center=({}, {}) before closing".format(
@@ -588,6 +702,12 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             return False
 
         if ball_point is None:
+            if scene.get("pickup_blocked_by_red_cross"):
+                print(
+                    "Pickup servo: only visible ball is inside the red-cross pickup clearance; not closing claw"
+                )
+                return False
+
             print(
                 "Pickup servo: ball is no longer visible; assuming it is at/inside the claw and closing"
             )
@@ -641,6 +761,7 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
                 camera,
                 robot_pose,
                 distance_map_units=final_scoop_distance,
+                scene=scene,
             )
 
         if center_to_ball <= PICKUP_CENTER_TO_BALL_CLOSE_DISTANCE + PICKUP_CENTER_TO_BALL_MARGIN:
@@ -662,6 +783,7 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
                 camera,
                 robot_pose,
                 distance_map_units=final_scoop_distance,
+                scene=scene,
             )
 
         max_step = pickup_servo_forward_step(center_to_ball)
@@ -675,6 +797,7 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
                 camera,
                 robot_pose,
                 distance_map_units=final_scoop_distance,
+                scene=scene,
             )
 
         print(
@@ -696,6 +819,12 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
 
     final_scene = capture_pickup_scene(camera, ball_color=ball_color)
     if final_scene is not None:
+        if final_scene.get("pickup_blocked_by_red_cross"):
+            print(
+                "Pickup servo: final frame only sees a ball inside the red-cross pickup clearance; not closing claw"
+            )
+            return False
+
         final_robot = final_scene["robot_pose"]
         final_ball = final_scene["ball_point"]
         if final_robot is not None and final_ball is not None:
@@ -721,6 +850,7 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
                     camera,
                     final_robot,
                     distance_map_units=final_scoop_distance,
+                    scene=final_scene,
                 )
 
     print("Pickup servo: max iterations reached but final distance is acceptable; closing")
