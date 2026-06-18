@@ -1,7 +1,6 @@
 import math
 import time
 
-from camera import create_matrix_from_frame, detect_vision_from_warped_frame, read_arena_frame
 from collection_algorithm import A_star
 from com_protocol import (
     build_claw_close,
@@ -10,7 +9,6 @@ from com_protocol import (
     build_setspeed,
     send_command,
 )
-from id_color import ball_pos_approx_shape, grapler_pos_approx, robot_pose_approx
 from map_utils import (
     clamp_map_point,
     heading_from_map_points,
@@ -35,12 +33,20 @@ from robot_sync import (
     goto_map_point_with_pose_pre_turn,
     map_xy_to_ev3_xy,
     normalize_turn_angle,
+    reverse_for_missing_grappler,
     sync_robot_from_camera,
     sync_robot_pose_value,
     turn_robot_to_heading,
 )
+from scene_analysis import (
+    ball_points_from_sources,
+    capture_scene_with_robot_pose_retry,
+    capture_vision_scene_frame,
+    grappler_point_from_sources,
+    robot_body_visible,
+    robot_pose_from_sources,
+)
 from settings import (
-    ALLOW_COLOR_DETECTION_FALLBACK,
     GRAPPLER_FORWARD_OFFSET_FALLBACK,
     GRAPPLER_LATERAL_OFFSET_FALLBACK,
     MAP_HEIGHT,
@@ -66,12 +72,10 @@ from settings import (
     PICKUP_SETTLE_SECONDS,
     PICKUP_STOP_DISTANCE,
     PICKUP_WAYPOINT_STEP_SIZE,
-    ROBOT_POSE_RETRY_DELAY_SECONDS,
     ROBOT_POSE_RETRY_FRAMES,
     SYNC_DELAY_SECONDS,
     USE_COARSE_PICKUP_PREAPPROACH,
 )
-from vision_debug_capture import save_missing_detection_frame
 
 
 def estimate_grappler_offset(robot_pose, grappler_point):
@@ -406,41 +410,16 @@ def scaled_final_scoop_distance(point):
 
 def capture_pickup_scene_frame(camera, ball_color="W"):
     """Read one camera frame and return detection results used for pickup."""
-    _raw_frame, warped_frame = read_arena_frame(camera)
+    scene = capture_vision_scene_frame(camera, "pickup")
 
-    if warped_frame is None:
+    if scene is None:
         return None
 
-    color_matrix = create_matrix_from_frame(warped_frame)
-    vision_scene = detect_vision_from_warped_frame(warped_frame)
-    save_missing_detection_frame(warped_frame, vision_scene, "pickup")
-
-    robot_pose = None
-    if vision_scene is not None:
-        robot_pose = vision_scene.robot_pose()
-
-    if robot_pose is None and ALLOW_COLOR_DETECTION_FALLBACK:
-        color_robot_pose = robot_pose_approx(color_matrix)
-
-        if vision_scene is not None:
-            robot_pose = vision_scene.robot_pose(fallback=color_robot_pose)
-
-        if robot_pose is None:
-            robot_pose = color_robot_pose
-
-    grappler_point = None
-    if vision_scene is not None:
-        grappler_point = vision_scene.grappler_point()
-
-    if grappler_point is None and ALLOW_COLOR_DETECTION_FALLBACK:
-        grappler_point = grapler_pos_approx(color_matrix, "G")
-
-    balls = []
-    if vision_scene is not None:
-        balls = vision_scene.ball_points(ball_color)
-
-    if not balls and ALLOW_COLOR_DETECTION_FALLBACK:
-        balls = ball_pos_approx_shape(color_matrix, ball_color)
+    color_matrix = scene["color_matrix"]
+    vision_scene = scene["vision_scene"]
+    robot_pose = robot_pose_from_sources(color_matrix, vision_scene)
+    grappler_point = grappler_point_from_sources(color_matrix, vision_scene)
+    balls = ball_points_from_sources(color_matrix, vision_scene, ball_color)
 
     balls, blocked_balls = filter_balls_for_red_cross_clearance(
         color_matrix,
@@ -462,40 +441,11 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
 
 
 def capture_pickup_scene(camera, ball_color="W", retry_frames=ROBOT_POSE_RETRY_FRAMES):
-    attempts = max(1, int(retry_frames))
-    last_scene = None
-
-    for attempt in range(1, attempts + 1):
-        scene = capture_pickup_scene_frame(camera, ball_color=ball_color)
-        last_scene = scene
-
-        if scene is None:
-            if attempt < attempts:
-                print(
-                    "Pickup camera: frame read failed; waiting for next frame ({}/{})".format(
-                        attempt,
-                        attempts,
-                    )
-                )
-                time.sleep(ROBOT_POSE_RETRY_DELAY_SECONDS)
-            continue
-
-        if scene["robot_pose"] is not None:
-            if attempt > 1:
-                print("Pickup camera: robot pose recovered on frame {}".format(attempt))
-            return scene
-
-        if attempt < attempts:
-            print(
-                "Pickup camera: robot pose missing; waiting for next frame ({}/{})".format(
-                    attempt,
-                    attempts,
-                )
-            )
-            time.sleep(ROBOT_POSE_RETRY_DELAY_SECONDS)
-
-    print("Pickup camera: robot pose still missing after {} frames".format(attempts))
-    return last_scene
+    return capture_scene_with_robot_pose_retry(
+        lambda: capture_pickup_scene_frame(camera, ball_color=ball_color),
+        "Pickup",
+        retry_frames=retry_frames,
+    )
 
 
 def pickup_servo_forward_step(center_to_ball):
@@ -697,6 +647,15 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
         grappler_point = scene["grappler_point"]
         ball_point = scene["ball_point"]
 
+        if grappler_point is None:
+            if robot_body_visible(scene["vision_scene"]):
+                if reverse_for_missing_grappler(sock, label="Pickup servo"):
+                    continue
+                return False
+
+            print("Pickup servo: missing grappler and robot body detection")
+            return False
+
         if robot_pose is None:
             print("Pickup servo: missing robot detection")
             return False
@@ -826,7 +785,13 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
             return False
 
         final_robot = final_scene["robot_pose"]
+        final_grappler = final_scene["grappler_point"]
         final_ball = final_scene["ball_point"]
+
+        if final_grappler is None and robot_body_visible(final_scene["vision_scene"]):
+            reverse_for_missing_grappler(sock, label="Pickup final frame")
+            return False
+
         if final_robot is not None and final_ball is not None:
             final_center = (int(round(final_robot[1])), int(round(final_robot[0])))
             final_distance_raw = point_distance(final_center, final_ball)

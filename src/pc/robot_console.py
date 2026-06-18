@@ -8,7 +8,7 @@ from camera import (
     open_camera,
     show_camera_once,
 )
-from robot_sync import get_robot_pose_from_camera, map_pose_to_ev3_pose
+from robot_sync import get_robot_pose_from_camera, sync_robot_pose_value
 from settings import CAMERA_INDEX, EV3_MAP_HEIGHT, EV3_MAP_WIDTH, SYNC_DELAY_SECONDS
 from com_protocol import (
     HOST,
@@ -33,21 +33,7 @@ def sync_robot_from_camera(sock, camera):
         print("Could not detect robot pose from camera")
         return True
 
-    map_x, map_y, heading = pose
-    x, y, heading = map_pose_to_ev3_pose(pose)
-    heading_tenths = int(round(heading * 10))
-
-    print(
-        "Camera sync: map=({}, {}), ev3=({}, {}), heading={:.1f}".format(
-            int(round(map_x)),
-            int(round(map_y)),
-            x,
-            y,
-            heading,
-        )
-    )
-
-    return send_command(sock, build_possync(x, y, heading_tenths))
+    return sync_robot_pose_value(sock, pose, label="Camera")
 
 
 def goto_xy_then_sync(sock, camera, x, y):

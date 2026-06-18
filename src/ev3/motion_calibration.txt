@@ -1,0 +1,2 @@
+degrees_per_turn_degree=2.863820
+degrees_per_map_unit=5.024337

@@ -7,6 +7,7 @@ from command_handler import CommandHandler
 HOST = "0.0.0.0"
 PORT = 5000
 RECV_CHUNK_SIZE = 8192
+SUCCESS_RESPONSE = b"EV3 got command\n"
 
 
 def loop(conn, command_handler, motor_controller):
@@ -41,7 +42,7 @@ def loop(conn, command_handler, motor_controller):
             print("Received raw bytes length:", len(command_bytes))
             print("Received raw bytes preview:", list(command_bytes[:40]))
 
-            conn.sendall(command_handler.last_response.encode("utf-8"))
+            conn.sendall(SUCCESS_RESPONSE)
 
 
 def main():

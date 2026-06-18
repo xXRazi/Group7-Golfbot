@@ -1,16 +1,20 @@
 import time
 
 from camera import detect_vision_from_warped_frame, read_arena_frame, save_frame
-from com_protocol import build_goto, build_possync, build_turn, send_command
-from id_color import robot_pose_approx
+from com_protocol import build_goto, build_possync, build_setspeed, build_turn, send_command
 from Imagesplitter import create_matrix
 from map_utils import clamp_map_point, heading_from_map_points, point_distance, robot_center_point
+from scene_analysis import robot_pose_from_sources
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
     EV3_MAP_HEIGHT,
     EV3_MAP_WIDTH,
     MAP_HEIGHT,
     MAP_WIDTH,
+    MISSING_GRAPPLER_REVERSE_ENABLED,
+    MISSING_GRAPPLER_REVERSE_SECONDS,
+    MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS,
+    MISSING_GRAPPLER_REVERSE_SPEED,
     PATH_PRETURN_HEADING_TOLERANCE,
     PICKUP_FINAL_HEADING_TOLERANCE,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
@@ -97,7 +101,7 @@ def get_robot_pose_from_camera_frame(camera):
     save_frame(warped_frame, SYNC_IMAGE_PATH)
     print("Saved sync image:", SYNC_IMAGE_PATH)
 
-    color_robot_pose = None
+    color_matrix = None
 
     if ALLOW_COLOR_DETECTION_FALLBACK:
         color_matrix = create_matrix(SYNC_IMAGE_PATH)
@@ -110,7 +114,6 @@ def get_robot_pose_from_camera_frame(camera):
             )
         )
 
-        color_robot_pose = robot_pose_approx(color_matrix)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
     save_missing_detection_frame(
         warped_frame,
@@ -123,9 +126,9 @@ def get_robot_pose_from_camera_frame(camera):
     if vision_scene is None:
         if not ALLOW_COLOR_DETECTION_FALLBACK:
             print("Camera sync: vision unavailable and color fallback is disabled")
-        return color_robot_pose
+        return robot_pose_from_sources(color_matrix, vision_scene)
 
-    robot_pose = vision_scene.robot_pose(fallback=color_robot_pose)
+    robot_pose = robot_pose_from_sources(color_matrix, vision_scene)
 
     if robot_pose is not None:
         print("Camera sync vision pose:", robot_pose)
@@ -134,7 +137,7 @@ def get_robot_pose_from_camera_frame(camera):
     if not ALLOW_COLOR_DETECTION_FALLBACK:
         print("Camera sync: vision did not detect a full robot pose and color fallback is disabled")
 
-    return color_robot_pose
+    return None
 
 
 def get_robot_pose_from_camera(camera, retry_frames=ROBOT_POSE_RETRY_FRAMES):
@@ -217,6 +220,41 @@ def sync_robot_pose_value(sock, robot_pose, label="Camera pose"):
 def normalize_turn_angle(angle):
     """Normalize a heading correction to the shortest signed turn."""
     return (float(angle) + 180.0) % 360.0 - 180.0
+
+
+def reverse_for_missing_grappler(sock, label="Missing grappler"):
+    if not MISSING_GRAPPLER_REVERSE_ENABLED:
+        print("{}: missing grappler reverse is disabled".format(label))
+        return False
+
+    speed = -abs(int(round(MISSING_GRAPPLER_REVERSE_SPEED)))
+    reverse_seconds = max(0.0, float(MISSING_GRAPPLER_REVERSE_SECONDS))
+    settle_seconds = max(0.0, float(MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS))
+
+    if reverse_seconds <= 0.0 or speed == 0:
+        print("{}: missing grappler reverse has no movement configured".format(label))
+        return False
+
+    print(
+        "{}: grappler/claw is not visible; reversing at speed {} for {:.2f}s".format(
+            label,
+            speed,
+            reverse_seconds,
+        )
+    )
+
+    if not send_command(sock, build_setspeed(speed, speed)):
+        return False
+
+    time.sleep(reverse_seconds)
+
+    if not send_command(sock, build_setspeed(0, 0)):
+        return False
+
+    if settle_seconds > 0.0:
+        time.sleep(settle_seconds)
+
+    return True
 
 
 def turn_robot_to_heading(sock, camera, target_heading, tolerance_degrees=PICKUP_FINAL_HEADING_TOLERANCE):

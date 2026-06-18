@@ -3,6 +3,12 @@ import os
 from dataclasses import dataclass
 
 from settings import (
+    DELIVERY_CLAW_TO_MARKER_DISTANCE,
+    DELIVERY_GOAL_A_MARKER_FALLBACK,
+    DELIVERY_GOAL_B_MARKER_FALLBACK,
+    DELIVERY_USE_FIXED_GOALS,
+    MAP_HEIGHT,
+    MAP_WIDTH,
     VISION_CONFIDENCE,
     VISION_DEBUG,
     VISION_DETECTION_ENABLED,
@@ -319,6 +325,23 @@ def _scaled_xy(x, y, scale):
     return int(round(float(x) * scale)), int(round(float(y) * scale))
 
 
+def _map_point_to_display_xy(point, frame_shape, scale):
+    row, col = point
+    frame_height, frame_width = frame_shape[:2]
+
+    if MAP_WIDTH > 1 and frame_width > 1:
+        x = float(col) * float(frame_width - 1) / float(MAP_WIDTH - 1)
+    else:
+        x = float(col)
+
+    if MAP_HEIGHT > 1 and frame_height > 1:
+        y = float(row) * float(frame_height - 1) / float(MAP_HEIGHT - 1)
+    else:
+        y = float(row)
+
+    return _scaled_xy(x, y, scale)
+
+
 def _draw_label(cv, image, text, x, y, color):
     font = cv.FONT_HERSHEY_SIMPLEX
     font_scale = 0.45
@@ -339,6 +362,64 @@ def _draw_label(cv, image, text, x, y, color):
         (0, 0, 0),
         thickness,
         cv.LINE_AA,
+    )
+
+
+def _fixed_goal_claw_target(goal_name, marker):
+    row, col = marker
+    distance = float(DELIVERY_CLAW_TO_MARKER_DISTANCE)
+
+    if goal_name == "A":
+        return row, int(round(float(col) - distance))
+
+    return row, int(round(float(col) + distance))
+
+
+def _draw_goal_marker_overlay(cv, image, frame_shape, scale, goal_name, marker, color):
+    marker_x, marker_y = _map_point_to_display_xy(marker, frame_shape, scale)
+    target = _fixed_goal_claw_target(goal_name, marker)
+    target_x, target_y = _map_point_to_display_xy(target, frame_shape, scale)
+    tick = 22
+
+    cv.line(image, (marker_x, marker_y - tick), (marker_x, marker_y + tick), color, 3)
+    cv.line(image, (marker_x - tick, marker_y), (marker_x + tick, marker_y), color, 2)
+    cv.circle(image, (marker_x, marker_y), 7, color, 2)
+    cv.circle(image, (target_x, target_y), 5, (0, 255, 0), -1)
+    cv.line(image, (target_x, target_y), (marker_x, marker_y), (0, 255, 0), 1)
+
+    label_x = max(0, min(image.shape[1] - 1, marker_x + 8))
+    label_y = max(0, min(image.shape[0] - 1, marker_y - tick - 4))
+    _draw_label(
+        cv,
+        image,
+        "Goal {} fixed map={}".format(goal_name, marker),
+        label_x,
+        label_y,
+        color,
+    )
+
+
+def _draw_fixed_goal_overlay(cv, image, frame_shape, scale):
+    if not DELIVERY_USE_FIXED_GOALS:
+        return
+
+    _draw_goal_marker_overlay(
+        cv,
+        image,
+        frame_shape,
+        scale,
+        "A",
+        DELIVERY_GOAL_A_MARKER_FALLBACK,
+        (255, 255, 0),
+    )
+    _draw_goal_marker_overlay(
+        cv,
+        image,
+        frame_shape,
+        scale,
+        "B",
+        DELIVERY_GOAL_B_MARKER_FALLBACK,
+        (255, 255, 0),
     )
 
 
@@ -378,6 +459,7 @@ def show_vision_live_view(frame, scene):
 
     try:
         display_frame, scale = _live_view_frame(cv, frame)
+        _draw_fixed_goal_overlay(cv, display_frame, frame.shape, scale)
 
         for detection in scene.detections:
             color = _KIND_COLORS.get(detection.kind, (0, 255, 0))

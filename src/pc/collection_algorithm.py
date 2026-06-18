@@ -26,15 +26,8 @@ class PathCell:
         self.h = 0  # heuristic cost
 
 
-test_Cell = PathCell
-
-
 def destination(row, col, dest_y, dest_x):
     return col == dest_x and row == dest_y
-
-
-def get_h_list(ry, rx, by, bx):
-    return [get_h(ry, rx, by, bx)]
 
 
 def get_h(ry, rx, by, bx):
@@ -63,18 +56,14 @@ def trace_path(cell, dx, dy):
 
 
 def is_valid(row, col):
-    if (row >= 0) and (row < ROW) and (col >= 0) and (col < COL):
-        return True
-    return False
+    return 0 <= row < ROW and 0 <= col < COL
 
 
 def is_unblocked(grid, row, col):
-    if grid[row][col] == '.' or grid[row][col] == 'W':
-        return True
+    return grid[row][col] == '.' or grid[row][col] == 'W'
 
 
 def A_star(color_matrix, src, dest):
-
     if not is_valid(src[0], src[1]) or not is_valid(dest[0], dest[1]):
         return "The specified rows and columns are not valid"
 
@@ -85,7 +74,7 @@ def A_star(color_matrix, src, dest):
         return "Source or destination is blocked"
 
     if destination(src[0], src[1], dest[0], dest[1]):
-        return "We are already there, bozo"
+        return "Source is already at destination"
 
     closed_list = [[False for _ in range(COL)] for _ in range(ROW)]
     cell_details = [[PathCell() for _ in range(COL)] for _ in range(ROW)]
@@ -130,7 +119,10 @@ def A_star(color_matrix, src, dest):
                     h_new = get_h(new_row, new_col, dest[0], dest[1])
                     f_new = g_new + h_new
 
-                    if cell_details[new_row][new_col].f == float('inf') or cell_details[new_row][new_col].f > f_new:
+                    if (
+                        cell_details[new_row][new_col].f == float('inf')
+                        or cell_details[new_row][new_col].f > f_new
+                    ):
                         heapq.heappush(open_list, (f_new, new_row, new_col))
                         cell_details[new_row][new_col].f = f_new
                         cell_details[new_row][new_col].g = g_new
@@ -138,30 +130,4 @@ def A_star(color_matrix, src, dest):
                         cell_details[new_row][new_col].parent_row = row
                         cell_details[new_row][new_col].parent_col = col
 
-    return "You fucked up, bozo"
-
-
-def test():
-    # Define the grid (1 for unblocked, 0 for blocked)
-    grid = [
-        [1, 0, 1, 1, 1, 1, 0, 1, 1, 1],
-        [1, 1, 1, 0, 1, 1, 1, 0, 1, 1],
-        [1, 1, 1, 0, 1, 1, 0, 1, 0, 1],
-        [0, 0, 1, 0, 1, 0, 0, 0, 0, 1],
-        [1, 1, 1, 0, 1, 1, 1, 0, 1, 0],
-        [1, 0, 1, 1, 1, 1, 0, 1, 0, 0],
-        [1, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-        [1, 0, 1, 1, 1, 1, 0, 1, 1, 1],
-        [1, 1, 1, 0, 0, 0, 1, 0, 0, 1]
-    ]
-
-    # Define the source and destination
-    src = [8, 0]
-    dest = [0, 0]
-
-    # Run the A* search algorithm
-    A_star(grid, src, dest)
-
-
-def vision_test(matrix, src, dest):
-    return A_star(matrix, src, dest)
+    return "No path found"

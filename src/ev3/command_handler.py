@@ -2,13 +2,15 @@
 # Python 3.5 compatible - no f-strings
 import struct
 
-from ev3dev2.motor import MediumMotor, MoveTank, SpeedPercent, OUTPUT_A, OUTPUT_B, OUTPUT_D
+from ev3dev2.motor import MediumMotor, SpeedPercent, OUTPUT_B
 
 ERROR     = 0x0
 CALIBRATE = 0x1
 SENDMAP   = 0x2
 RAW_TURN  = 0x3   # spin exact motor shaft degrees — used by calibrate_turn.py
 MAPSIZE   = 0x4
+MOTIONCAL = 0x5
+RAW_DRIVE = 0x6
 CLAW      = 0x9
 HANDSHAKE = 0xA
 GOTO      = 0xB
@@ -29,12 +31,16 @@ SENDMAP_HEADER_LENGTH = 5
 HANDSHAKE_LENGTH      = 1
 RAW_TURN_LENGTH       = 4   # [CMD][MOTOR_DEGREES:uint16][SPEED:uint8]
 MAPSIZE_LENGTH        = 5   # [CMD][ROWS:uint16][COLS:uint16]
+MOTIONCAL_LENGTH      = 9   # [CMD][TURN_SCALE:int32][DRIVE_SCALE:int32]
+RAW_DRIVE_LENGTH      = 4   # [CMD][DISTANCE_MAP_UNITS:int16][SPEED:int8]
 CLAW_LENGTH           = 2
 GOTO_LENGTH           = 9
 POSSYNC_LENGTH        = 11
 TURN_LENGTH           = 4
 SETSPEED_LENGTH       = 3
 FINISH_LENGTH         = 1
+
+MOTION_CALIBRATION_SCALE = 10000.0
 
 
 def byte_to_signed(value):
@@ -53,6 +59,10 @@ def read_int16(data, offset):
 
 def read_uint16(data, offset):
     return struct.unpack(">H", data[offset:offset + 2])[0]
+
+
+def read_motioncal_value(data, offset):
+    return read_int32(data, offset) / MOTION_CALIBRATION_SCALE
 
 
 def sendmap_length(data):
@@ -107,6 +117,8 @@ class CommandHandler:
             SENDMAP:   Command(SENDMAP,   sendmap_length,   self.sendmap_command),
             RAW_TURN:  Command(RAW_TURN,  RAW_TURN_LENGTH,  self.raw_turn_command),
             MAPSIZE:   Command(MAPSIZE,   MAPSIZE_LENGTH,   self.mapsize_command),
+            MOTIONCAL: Command(MOTIONCAL, MOTIONCAL_LENGTH, self.motioncal_command),
+            RAW_DRIVE: Command(RAW_DRIVE, RAW_DRIVE_LENGTH, self.raw_drive_command),
             CLAW:      Command(CLAW,      CLAW_LENGTH,      self.claw_command),
             HANDSHAKE: Command(HANDSHAKE, HANDSHAKE_LENGTH, self.handshake),
             GOTO:      Command(GOTO,      GOTO_LENGTH,      self.goto),
@@ -178,6 +190,27 @@ class CommandHandler:
         cols = read_uint16(data, 3)
         self.motor_controller.set_map_dimensions(rows, cols)
         print("MAPSIZE rows={}, cols={}".format(rows, cols))
+
+    def motioncal_command(self, data):
+        degrees_per_turn_degree = read_motioncal_value(data, 1)
+        degrees_per_map_unit = read_motioncal_value(data, 5)
+
+        print("MOTIONCAL turn={:.4f}, drive={:.4f}".format(
+            degrees_per_turn_degree,
+            degrees_per_map_unit,
+        ))
+        self.motor_controller.set_motion_calibration(
+            degrees_per_turn_degree,
+            degrees_per_map_unit,
+            persist=True,
+        )
+
+    def raw_drive_command(self, data):
+        distance_map_units = read_int16(data, 1)
+        speed = byte_to_signed(data[3])
+
+        print("RAW_DRIVE distance={}, speed={}".format(distance_map_units, speed))
+        self.motor_controller.drive_straight(distance_map_units, speed)
 
     # ── Raw turn command (calibration only) ──────────────────────────────────
 

@@ -16,7 +16,10 @@ PORT = 5000
 ERROR = 0x0
 CALIBRATE = 0x1
 SENDMAP = 0x2
+RAW_TURN = 0x3
 MAPSIZE = 0x4
+MOTIONCAL = 0x5
+RAW_DRIVE = 0x6
 CLAW = 0x9
 HANDSHAKE = 0xA
 GOTO = 0xB
@@ -40,6 +43,8 @@ CLAW_ACTIONS = {
     "corner_ball": CLAW_CORNER,
     "pickup_corner": CLAW_CORNER,
 }
+
+MOTION_CALIBRATION_SCALE = 10000.0
 
 
 def validate_int_range(value, name, lower, upper):
@@ -72,6 +77,18 @@ def validate_unsigned_short(value, name):
 
 def validate_unsigned_byte(value, name):
     return validate_int_range(value, name, 0, 255)
+
+
+def encode_motion_calibration_value(value, name):
+    value = float(value)
+
+    if value <= 0.0:
+        raise ValueError("{} must be positive".format(name))
+
+    return validate_signed_int(
+        int(round(value * MOTION_CALIBRATION_SCALE)),
+        name,
+    )
 
 
 def packet_preview(packet, max_bytes=40):
@@ -119,6 +136,18 @@ def _packet_moves_robot(packet):
             return True
         angle = struct.unpack(">h", packet[1:3])[0]
         return angle != 0
+
+    if command == RAW_TURN:
+        if len(packet) < 4:
+            return True
+        motor_degrees = struct.unpack(">H", packet[1:3])[0]
+        return motor_degrees != 0
+
+    if command == RAW_DRIVE:
+        if len(packet) < 4:
+            return True
+        distance = struct.unpack(">h", packet[1:3])[0]
+        return distance != 0
 
     if command == SETSPEED:
         if len(packet) < 3:
@@ -234,6 +263,51 @@ def build_turn(angle, speed):
     speed = validate_signed_byte(speed, "speed")
 
     return struct.pack(">Bhb", TURN, angle, speed)
+
+
+def build_raw_turn(motor_degrees, speed):
+    """
+    RAW_TURN packet:
+    [CMD][MOTOR_DEGREES:uint16][SPEED:uint8]
+
+    Total length: 4 bytes. Always turns left on the EV3.
+    """
+    motor_degrees = validate_unsigned_short(motor_degrees, "motor_degrees")
+    speed = validate_unsigned_byte(speed, "speed")
+
+    return struct.pack(">BHB", RAW_TURN, motor_degrees, speed)
+
+
+def build_motioncal(degrees_per_turn_degree, degrees_per_map_unit):
+    """
+    MOTIONCAL packet:
+    [CMD][TURN_SCALE:int32][DRIVE_SCALE:int32]
+
+    Scale values are sent as value * MOTION_CALIBRATION_SCALE.
+    """
+    turn_scaled = encode_motion_calibration_value(
+        degrees_per_turn_degree,
+        "degrees_per_turn_degree",
+    )
+    drive_scaled = encode_motion_calibration_value(
+        degrees_per_map_unit,
+        "degrees_per_map_unit",
+    )
+
+    return struct.pack(">Bii", MOTIONCAL, turn_scaled, drive_scaled)
+
+
+def build_raw_drive(distance_map_units, speed=0):
+    """
+    RAW_DRIVE packet:
+    [CMD][DISTANCE_MAP_UNITS:int16][SPEED:int8]
+
+    Total length: 4 bytes. Drives straight without turning first.
+    """
+    distance_map_units = validate_signed_short(distance_map_units, "distance_map_units")
+    speed = validate_signed_byte(speed, "speed")
+
+    return struct.pack(">Bhb", RAW_DRIVE, distance_map_units, speed)
 
 
 def build_setspeed(left, right):
@@ -354,6 +428,9 @@ def print_help():
     print("  possync X Y")
     print("  possync X Y HEADING_TENTHS")
     print("  turn ANGLE SPEED")
+    print("  raw_turn MOTOR_DEGREES SPEED")
+    print("  motioncal DEGREES_PER_TURN_DEGREE DEGREES_PER_MAP_UNIT")
+    print("  raw_drive DISTANCE_MAP_UNITS SPEED")
     print("  setspeed LEFT RIGHT")
     print("  claw open")
     print("  claw close")
@@ -377,6 +454,9 @@ def print_help():
     print("  possync packet length is 11 bytes")
     print("  turn angle uses signed 16-bit integer")
     print("  turn speed uses signed byte: -128..127")
+    print("  raw_turn motor degrees use unsigned 16-bit integer")
+    print("  motioncal values are positive floats")
+    print("  raw_drive distance uses signed 16-bit integer")
     print("  setspeed/calibrate use signed bytes: -128..127")
     print("  claw action is sent as: 0=close, 1=open, 2=stop, 3=deliver, 4=corner pickup")
     print("  sendmap rows/cols use unsigned 16-bit integers")
@@ -464,6 +544,36 @@ def interactive_loop(sock, host, port):
                 speed = int(parts[2])
 
                 packet = build_turn(angle, speed)
+
+            elif cmd == "raw_turn":
+                if len(parts) != 3:
+                    print("Usage: raw_turn MOTOR_DEGREES SPEED")
+                    continue
+
+                motor_degrees = int(parts[1])
+                speed = int(parts[2])
+
+                packet = build_raw_turn(motor_degrees, speed)
+
+            elif cmd == "motioncal":
+                if len(parts) != 3:
+                    print("Usage: motioncal DEGREES_PER_TURN_DEGREE DEGREES_PER_MAP_UNIT")
+                    continue
+
+                degrees_per_turn_degree = float(parts[1])
+                degrees_per_map_unit = float(parts[2])
+
+                packet = build_motioncal(degrees_per_turn_degree, degrees_per_map_unit)
+
+            elif cmd == "raw_drive":
+                if len(parts) != 3:
+                    print("Usage: raw_drive DISTANCE_MAP_UNITS SPEED")
+                    continue
+
+                distance_map_units = int(parts[1])
+                speed = int(parts[2])
+
+                packet = build_raw_drive(distance_map_units, speed)
 
             elif cmd == "setspeed":
                 if len(parts) != 3:

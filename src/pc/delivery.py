@@ -1,7 +1,6 @@
 import math
 import time
 
-from camera import create_matrix_from_frame, detect_vision_from_warped_frame, read_arena_frame
 from collection_algorithm import A_star
 from com_protocol import (
     build_claw_close,
@@ -10,7 +9,7 @@ from com_protocol import (
     build_turn,
     send_command,
 )
-from id_color import color_blobs, robot_pose_approx
+from id_color import color_blobs
 from map_utils import (
     clamp_map_point,
     path_is_valid,
@@ -22,6 +21,7 @@ from path_obstacles import (
     clear_path_endpoint,
     clone_path_matrix,
     mark_red_cross_obstacles,
+    point_in_obstacle_regions,
     red_cross_obstacle_regions,
     segment_intersects_regions,
 )
@@ -29,25 +29,48 @@ from robot_sync import (
     goto_then_sync_with_pre_turn,
     goto_map_point_with_pose,
     normalize_turn_angle,
+    reverse_for_missing_grappler,
     sync_robot_pose_from_camera,
     sync_robot_pose_value,
 )
+from scene_analysis import (
+    capture_scene_with_robot_pose_retry,
+    capture_vision_scene_frame,
+    robot_body_visible,
+    robot_pose_from_sources,
+)
 from settings import (
-    ALLOW_COLOR_DETECTION_FALLBACK,
     DELIVERY_CENTER_TO_MARKER_DISTANCE,
     DELIVERY_CENTER_TO_CLAW_DISTANCE,
     DELIVERY_CLAW_EDGE_MARGIN,
     DELIVERY_CLAW_POSITION_TOLERANCE,
     DELIVERY_CLAW_TO_MARKER_DISTANCE,
+    DELIVERY_DYNAMIC_REPLAN_MAX_STEPS,
     DELIVERY_EDGE_ESCAPE_REVERSE_SPEED,
     DELIVERY_EDGE_ESCAPE_SECONDS,
     DELIVERY_FINAL_CORRECTION_ATTEMPTS,
+    DELIVERY_GOAL_A_HEADING_TOLERANCE,
     DELIVERY_GOAL_A_MARKER_FALLBACK,
+    DELIVERY_GOAL_B_HEADING_TOLERANCE,
     DELIVERY_GOAL_B_MARKER_FALLBACK,
+    DELIVERY_GOAL_DISTANCE_CORRECTION_ATTEMPTS,
+    DELIVERY_GOAL_DISTANCE_CORRECTION_MARGIN,
+    DELIVERY_GOAL_DISTANCE_REVERSE_ENABLED,
+    DELIVERY_GOAL_DISTANCE_REVERSE_HEADING_TOLERANCE,
+    DELIVERY_GOAL_DISTANCE_REVERSE_MAX_DISTANCE,
+    DELIVERY_GOAL_DISTANCE_REVERSE_MAX_SECONDS,
+    DELIVERY_GOAL_DISTANCE_REVERSE_MIN_SECONDS,
+    DELIVERY_GOAL_DISTANCE_REVERSE_SECONDS_PER_MAP_UNIT,
+    DELIVERY_GOAL_DISTANCE_REVERSE_SPEED,
     DELIVERY_GOAL_PREFERENCE,
     DELIVERY_HEADING_TOLERANCE,
+    DELIVERY_ORANGE_BALL_GOAL,
+    DELIVERY_MIN_CENTER_GOAL_DISTANCE,
+    DELIVERY_MIN_CLAW_GOAL_DISTANCE,
     DELIVERY_PREFER_VISION_GOALS,
     DELIVERY_POSITION_TOLERANCE,
+    DELIVERY_RED_CROSS_CLEARANCE_MARGIN,
+    DELIVERY_RED_CROSS_RETRY_FRAMES,
     DELIVERY_REQUIRE_CENTER_POSITION,
     DELIVERY_ROBOT_EDGE_MARGIN,
     DELIVERY_USE_FIXED_GOALS,
@@ -61,33 +84,18 @@ from settings import (
     ROBOT_POSE_RETRY_DELAY_SECONDS,
     ROBOT_POSE_RETRY_FRAMES,
 )
-from vision_debug_capture import save_missing_detection_frame
 
 
 def capture_delivery_scene_frame(camera):
     """Read one camera frame and detect robot pose plus delivery goal positions."""
-    _raw_frame, warped_frame = read_arena_frame(camera)
+    scene = capture_vision_scene_frame(camera, "delivery")
 
-    if warped_frame is None:
+    if scene is None:
         return None
 
-    color_matrix = create_matrix_from_frame(warped_frame)
-    vision_scene = detect_vision_from_warped_frame(warped_frame)
-    save_missing_detection_frame(warped_frame, vision_scene, "delivery")
-
-    robot_pose = None
-    if vision_scene is not None:
-        robot_pose = vision_scene.robot_pose()
-
-    if robot_pose is None and ALLOW_COLOR_DETECTION_FALLBACK:
-        color_robot_pose = robot_pose_approx(color_matrix)
-
-        if vision_scene is not None:
-            robot_pose = vision_scene.robot_pose(fallback=color_robot_pose)
-
-        if robot_pose is None:
-            robot_pose = color_robot_pose
-
+    color_matrix = scene["color_matrix"]
+    vision_scene = scene["vision_scene"]
+    robot_pose = robot_pose_from_sources(color_matrix, vision_scene)
     goals = choose_delivery_goal_markers(color_matrix, vision_scene)
     grappler_point = None
 
@@ -104,40 +112,11 @@ def capture_delivery_scene_frame(camera):
 
 
 def capture_delivery_scene(camera, retry_frames=ROBOT_POSE_RETRY_FRAMES):
-    attempts = max(1, int(retry_frames))
-    last_scene = None
-
-    for attempt in range(1, attempts + 1):
-        scene = capture_delivery_scene_frame(camera)
-        last_scene = scene
-
-        if scene is None:
-            if attempt < attempts:
-                print(
-                    "Delivery camera: frame read failed; waiting for next frame ({}/{})".format(
-                        attempt,
-                        attempts,
-                    )
-                )
-                time.sleep(ROBOT_POSE_RETRY_DELAY_SECONDS)
-            continue
-
-        if scene["robot_pose"] is not None:
-            if attempt > 1:
-                print("Delivery camera: robot pose recovered on frame {}".format(attempt))
-            return scene
-
-        if attempt < attempts:
-            print(
-                "Delivery camera: robot pose missing; waiting for next frame ({}/{})".format(
-                    attempt,
-                    attempts,
-                )
-            )
-            time.sleep(ROBOT_POSE_RETRY_DELAY_SECONDS)
-
-    print("Delivery camera: robot pose still missing after {} frames".format(attempts))
-    return last_scene
+    return capture_scene_with_robot_pose_retry(
+        lambda: capture_delivery_scene_frame(camera),
+        "Delivery",
+        retry_frames=retry_frames,
+    )
 
 
 def open_claw_detection_in_scene(scene):
@@ -316,6 +295,14 @@ def delivery_goal_heading(goal_name):
     raise ValueError("goal_name must be A or B")
 
 
+def delivery_goal_heading_tolerance(goal_name):
+    if goal_name == "A":
+        return float(DELIVERY_GOAL_A_HEADING_TOLERANCE)
+    if goal_name == "B":
+        return float(DELIVERY_GOAL_B_HEADING_TOLERANCE)
+    raise ValueError("goal_name must be A or B")
+
+
 def delivery_center_is_safe(point, margin=DELIVERY_ROBOT_EDGE_MARGIN):
     row, col = point
     return (
@@ -434,6 +421,69 @@ def delivery_claw_is_on_goal_side(goal_name, marker, claw_point):
     return marker_to_claw_backward >= -float(DELIVERY_CLAW_POSITION_TOLERANCE)
 
 
+def delivery_distance_to_goal_wall(goal_name, point):
+    _row, col = point
+
+    if goal_name == "A":
+        return float(MAP_WIDTH - 1) - float(col)
+
+    if goal_name == "B":
+        return float(col)
+
+    raise ValueError("goal_name must be A or B")
+
+
+def delivery_goal_distance_status(goal_name, center, claw_point):
+    center_distance = delivery_distance_to_goal_wall(goal_name, center)
+    claw_distance = delivery_distance_to_goal_wall(goal_name, claw_point)
+    center_ok = center_distance >= float(DELIVERY_MIN_CENTER_GOAL_DISTANCE)
+    claw_ok = claw_distance >= float(DELIVERY_MIN_CLAW_GOAL_DISTANCE)
+
+    return {
+        "center_distance": center_distance,
+        "claw_distance": claw_distance,
+        "center_ok": center_ok,
+        "claw_ok": claw_ok,
+        "ok": center_ok and claw_ok,
+    }
+
+
+def delivery_safe_center_for_goal_distance(goal_name, center, claw_point):
+    center_row, center_col = center
+    target_col = float(center_col)
+    extra_margin = max(0.0, float(DELIVERY_GOAL_DISTANCE_CORRECTION_MARGIN))
+    min_center_distance = float(DELIVERY_MIN_CENTER_GOAL_DISTANCE) + extra_margin
+    min_claw_distance = float(DELIVERY_MIN_CLAW_GOAL_DISTANCE) + extra_margin
+    claw_distance = delivery_distance_to_goal_wall(goal_name, claw_point)
+
+    if goal_name == "A":
+        target_col = min(
+            target_col,
+            float(MAP_WIDTH - 1) - min_center_distance,
+        )
+
+        if claw_distance < min_claw_distance:
+            target_col = min(
+                target_col,
+                float(center_col) - (min_claw_distance - claw_distance),
+            )
+    elif goal_name == "B":
+        target_col = max(
+            target_col,
+            min_center_distance,
+        )
+
+        if claw_distance < min_claw_distance:
+            target_col = max(
+                target_col,
+                float(center_col) + (min_claw_distance - claw_distance),
+            )
+    else:
+        raise ValueError("goal_name must be A or B")
+
+    return clamp_delivery_center((center_row, target_col))
+
+
 def delivery_goal_option(goal_name, goal_marker):
     if not delivery_goal_marker_is_approachable(goal_marker):
         print(
@@ -496,6 +546,21 @@ def choose_delivery_goal(robot_pose, goal_a, goal_b, preference=DELIVERY_GOAL_PR
     return min(options, key=lambda option: point_distance(robot_center, option["waypoint"]))
 
 
+def delivery_goal_preference_for_ball(ball_color):
+    normalized_color = str(ball_color or "").strip().upper()
+
+    if normalized_color == "O" and DELIVERY_ORANGE_BALL_GOAL in ("A", "B"):
+        print(
+            "Delivery: orange ball detected; forcing Goal_{} ({})".format(
+                DELIVERY_ORANGE_BALL_GOAL,
+                "right/small" if DELIVERY_ORANGE_BALL_GOAL == "A" else "left/big",
+            )
+        )
+        return DELIVERY_ORANGE_BALL_GOAL
+
+    return DELIVERY_GOAL_PREFERENCE
+
+
 def turn_delivery_to_heading(sock, camera, target_heading, tolerance_degrees=DELIVERY_HEADING_TOLERANCE):
     """Turn for delivery and verify from the camera before pushing the ball."""
     for attempt in range(1, 3):
@@ -536,6 +601,87 @@ def turn_delivery_to_heading(sock, camera, target_heading, tolerance_degrees=DEL
     return abs(final_error) <= float(tolerance_degrees)
 
 
+def _clamp_float(value, min_value, max_value):
+    return max(float(min_value), min(float(max_value), float(value)))
+
+
+def try_reverse_goal_distance_correction(
+    sock,
+    camera,
+    robot_pose,
+    safe_center,
+    heading_error,
+    label="Delivery goal-distance correction",
+):
+    if not DELIVERY_GOAL_DISTANCE_REVERSE_ENABLED or robot_pose is None:
+        return None
+
+    heading_error = float(heading_error)
+
+    if abs(heading_error) > float(DELIVERY_GOAL_DISTANCE_REVERSE_HEADING_TOLERANCE):
+        print(
+            "{}: heading error {:.1f} is too large for straight reverse; using normal GOTO".format(
+                label,
+                heading_error,
+            )
+        )
+        return None
+
+    current_center = robot_center_point(robot_pose)
+    reverse_distance = point_distance(current_center, safe_center)
+
+    if reverse_distance <= 2.0:
+        print("{}: reverse target is already reached; using normal verification".format(label))
+        return None
+
+    if reverse_distance > float(DELIVERY_GOAL_DISTANCE_REVERSE_MAX_DISTANCE):
+        print(
+            "{}: reverse distance {:.1f} is too large; using normal GOTO".format(
+                label,
+                reverse_distance,
+            )
+        )
+        return None
+
+    speed = -abs(int(round(DELIVERY_GOAL_DISTANCE_REVERSE_SPEED)))
+
+    if speed == 0:
+        print("{}: reverse speed is zero; using normal GOTO".format(label))
+        return None
+
+    duration = _clamp_float(
+        reverse_distance * float(DELIVERY_GOAL_DISTANCE_REVERSE_SECONDS_PER_MAP_UNIT),
+        DELIVERY_GOAL_DISTANCE_REVERSE_MIN_SECONDS,
+        DELIVERY_GOAL_DISTANCE_REVERSE_MAX_SECONDS,
+    )
+
+    print(
+        "{}: reversing instead of GOTO; center={} target={}, distance={:.1f}, "
+        "speed={}, seconds={:.2f}".format(
+            label,
+            current_center,
+            safe_center,
+            reverse_distance,
+            speed,
+            duration,
+        )
+    )
+
+    if not sync_robot_pose_value(sock, robot_pose, label="{} pre-reverse".format(label)):
+        return False
+
+    if not send_command(sock, build_setspeed(speed, speed)):
+        return False
+
+    time.sleep(duration)
+
+    if not send_command(sock, build_setspeed(0, 0)):
+        return False
+
+    time.sleep(PICKUP_FINAL_SYNC_DELAY_SECONDS)
+    return sync_robot_pose_from_camera(sock, camera) is not None
+
+
 def delivery_path_matrix(scene, start_point, target_point):
     color_matrix = scene.get("color_matrix") if scene is not None else None
 
@@ -546,6 +692,7 @@ def delivery_path_matrix(scene, start_point, target_point):
     red_cross_count = mark_red_cross_obstacles(
         path_matrix,
         scene.get("vision_scene"),
+        margin=DELIVERY_RED_CROSS_CLEARANCE_MARGIN,
     )
 
     if red_cross_count:
@@ -555,101 +702,278 @@ def delivery_path_matrix(scene, start_point, target_point):
     return path_matrix, red_cross_count
 
 
-def delivery_direct_path_crosses_red_cross(scene, start_point, target_point):
+def delivery_red_cross_regions(scene):
     color_matrix = scene.get("color_matrix") if scene is not None else None
     vision_scene = scene.get("vision_scene") if scene is not None else None
-    regions = red_cross_obstacle_regions(color_matrix, vision_scene)
+    return red_cross_obstacle_regions(
+        color_matrix,
+        vision_scene,
+        margin=DELIVERY_RED_CROSS_CLEARANCE_MARGIN,
+    )
 
-    if not regions:
-        return False
 
-    crosses_red_cross = segment_intersects_regions(start_point, target_point, regions)
+def capture_delivery_scene_with_red_cross(
+    camera,
+    label="Delivery",
+    retry_frames=DELIVERY_RED_CROSS_RETRY_FRAMES,
+):
+    attempts = max(1, int(retry_frames))
+    last_scene = None
 
-    if not crosses_red_cross:
+    for attempt in range(1, attempts + 1):
+        scene = capture_delivery_scene(camera)
+        last_scene = scene
+
+        if scene is not None and delivery_red_cross_regions(scene):
+            if attempt > 1:
+                print("{}: red cross recovered on frame {}".format(label, attempt))
+            return scene
+
+        if attempt < attempts:
+            print(
+                "{}: red cross missing; waiting for next frame ({}/{})".format(
+                    label,
+                    attempt,
+                    attempts,
+                )
+            )
+            time.sleep(ROBOT_POSE_RETRY_DELAY_SECONDS)
+
+    print("{}: red cross still missing after {} frames; refusing blind delivery move".format(label, attempts))
+    return last_scene if last_scene is not None and delivery_red_cross_regions(last_scene) else None
+
+
+def _farthest_path_point_within_distance(robot_path, start_point, max_distance):
+    chosen = None
+
+    for point in robot_path[1:]:
+        if point_distance(start_point, point) > max_distance:
+            break
+        chosen = point
+
+    return chosen
+
+
+def choose_delivery_escape_waypoint(robot_path, start_point, regions):
+    if not point_in_obstacle_regions(start_point, regions):
+        return None
+
+    previous_point = None
+
+    for point in robot_path[1:]:
+        previous_point = point
+
+        if not point_in_obstacle_regions(point, regions):
+            print(
+                "Delivery dynamic replan: robot starts inside red-cross clearance; escaping via {}".format(
+                    point,
+                )
+            )
+            return point
+
+    if previous_point is not None and point_distance(start_point, previous_point) > 2.0:
         print(
-            "Delivery waypoint: direct segment {} -> {} does not cross red cross; using direct GOTO".format(
-                start_point,
-                target_point,
+            "Delivery dynamic replan: path stays inside clearance for now; continuing escape via {}".format(
+                previous_point,
             )
         )
+        return previous_point
 
-    return crosses_red_cross
+    return None
 
 
-def follow_delivery_path(sock, camera, robot_pose, robot_path, label):
+def choose_safe_delivery_waypoint(robot_path, start_point, target_point, regions):
     if not path_is_valid(robot_path):
-        print("{}: invalid path {}".format(label, robot_path))
-        return False
+        return None
 
-    if not sync_robot_pose_value(sock, robot_pose, label="{} pre-path".format(label)):
-        return False
+    escape_point = choose_delivery_escape_waypoint(robot_path, start_point, regions)
+
+    if escape_point is not None:
+        return escape_point
 
     waypoints = simplify_path_for_robot(
         robot_path,
         min_spacing=DELIVERY_WAYPOINT_STEP_SIZE,
     )
 
-    if len(waypoints) > 1:
-        waypoints = waypoints[1:]
+    candidates = waypoints[1:] if len(waypoints) > 1 else []
 
-    print("{}: following {} waypoint(s) around red cross".format(label, len(waypoints)))
+    for point in candidates:
+        if segment_intersects_regions(start_point, point, regions):
+            print(
+                "Delivery dynamic replan: simplified waypoint {} crosses current red cross; trying a closer point".format(
+                    point,
+                )
+            )
+            continue
+        return point
 
-    for index, (row, col) in enumerate(waypoints, start=1):
+    safe_point = None
+
+    for point in robot_path[1:]:
+        if segment_intersects_regions(start_point, point, regions):
+            break
+        safe_point = point
+
+    if safe_point is not None and point_distance(start_point, safe_point) > 2.0:
+        return safe_point
+
+    raw_step = _farthest_path_point_within_distance(
+        robot_path,
+        start_point,
+        max(8.0, float(DELIVERY_WAYPOINT_STEP_SIZE) / 2.0),
+    )
+
+    if raw_step is not None and point_distance(start_point, raw_step) > 2.0:
         print(
-            "{} waypoint {}/{}: map=({}, {})".format(
-                label,
-                index,
-                len(waypoints),
-                col,
-                row,
+            "Delivery dynamic replan: using short raw A* waypoint {} after shortcut checks failed".format(
+                raw_step,
             )
         )
+        return raw_step
 
-        waypoint_label = "{} waypoint {}/{}".format(label, index, len(waypoints))
+    for point in robot_path[1:]:
+        if point_distance(start_point, point) > 2.0:
+            print(
+                "Delivery dynamic replan: keeping progress with nearest raw A* waypoint {}".format(
+                    point,
+                )
+            )
+            return point
 
-        if not goto_then_sync_with_pre_turn(sock, camera, row, col, label=waypoint_label):
-            return False
+    if not segment_intersects_regions(start_point, target_point, regions):
+        return target_point
 
-    return True
+    if len(robot_path) > 1:
+        print(
+            "Delivery dynamic replan: using final raw A* fallback waypoint {}".format(
+                robot_path[1],
+            )
+        )
+        return robot_path[1]
+
+    return target_point
 
 
 def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="Delivery waypoint"):
     if robot_pose is None:
-        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
+        scene = capture_delivery_scene_with_red_cross(camera, label=label)
 
-    start_point = robot_center_point(robot_pose)
+        if scene is None:
+            return False
 
-    if point_distance(start_point, target_point) <= 2.0:
-        print("{}: already at target {}".format(label, target_point))
-        return sync_robot_pose_value(sock, robot_pose, label="{} already-at-target".format(label))
+        robot_pose = scene["robot_pose"]
 
-    if not delivery_direct_path_crosses_red_cross(scene, start_point, target_point):
-        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
+        if robot_pose is None:
+            print("{}: could not detect robot pose for delivery move".format(label))
+            return False
 
-    path_matrix, red_cross_count = delivery_path_matrix(scene, start_point, target_point)
-
-    if red_cross_count <= 0:
-        return goto_map_point_with_pose(sock, camera, robot_pose, target_point, label=label)
-
-    robot_path = A_star(path_matrix, start_point, target_point)
-
-    if not path_is_valid(robot_path):
-        print(
-            "{}: red cross was detected, but A* could not find a safe route: {}".format(
-                label,
-                robot_path,
-            )
+    for step in range(1, max(1, int(DELIVERY_DYNAMIC_REPLAN_MAX_STEPS)) + 1):
+        fresh_scene = capture_delivery_scene_with_red_cross(
+            camera,
+            label="{} replan".format(label),
         )
-        return False
 
-    print(
-        "{}: planned red-cross avoiding route from {} to {}".format(
-            label,
+        if fresh_scene is None:
+            return False
+
+        robot_pose = fresh_scene["robot_pose"]
+
+        if robot_pose is None:
+            print("{}: could not detect robot pose for dynamic replan".format(label))
+            return False
+
+        start_point = robot_center_point(robot_pose)
+
+        if point_distance(start_point, target_point) <= 2.0:
+            print("{}: already at target {}".format(label, target_point))
+            return sync_robot_pose_value(
+                sock,
+                robot_pose,
+                label="{} already-at-target".format(label),
+            )
+
+        regions = delivery_red_cross_regions(fresh_scene)
+
+        if not regions:
+            print("{}: no red cross in fresh scene; refusing blind delivery move".format(label))
+            return False
+
+        crosses_red_cross = segment_intersects_regions(start_point, target_point, regions)
+
+        if not crosses_red_cross:
+            print(
+                "{} dynamic replan {}: fresh direct segment {} -> {} avoids red cross; using direct GOTO".format(
+                    label,
+                    step,
+                    start_point,
+                    target_point,
+                )
+            )
+            return goto_map_point_with_pose(
+                sock,
+                camera,
+                robot_pose,
+                target_point,
+                label=label,
+            )
+
+        path_matrix, red_cross_count = delivery_path_matrix(fresh_scene, start_point, target_point)
+
+        if red_cross_count <= 0:
+            print("{}: red cross disappeared while planning; refusing blind delivery move".format(label))
+            return False
+
+        robot_path = A_star(path_matrix, start_point, target_point)
+
+        if not path_is_valid(robot_path):
+            print(
+                "{}: red cross was detected, but A* could not find a safe route: {}".format(
+                    label,
+                    robot_path,
+                )
+            )
+            return False
+
+        next_point = choose_safe_delivery_waypoint(
+            robot_path,
             start_point,
             target_point,
+            regions,
+        )
+
+        if next_point is None:
+            print("{}: could not choose a safe next waypoint around the red cross".format(label))
+            return False
+
+        print(
+            "{} dynamic replan {}: moving from {} toward {} via {}".format(
+                label,
+                step,
+                start_point,
+                target_point,
+                next_point,
+            )
+        )
+
+        waypoint_label = "{} dynamic waypoint {}".format(label, step)
+
+        if not goto_then_sync_with_pre_turn(
+            sock,
+            camera,
+            next_point[0],
+            next_point[1],
+            label=waypoint_label,
+        ):
+            return False
+
+    print(
+        "{}: dynamic replan did not reach target after {} step(s)".format(
+            label,
+            int(DELIVERY_DYNAMIC_REPLAN_MAX_STEPS),
         )
     )
-    return follow_delivery_path(sock, camera, robot_pose, robot_path, label)
+    return False
 
 
 def reverse_delivery_away_from_edge(sock, camera):
@@ -757,13 +1081,13 @@ def choose_fresh_delivery_option(sock, camera, goal_name):
 
     if scene is None:
         print("Delivery verify: could not read camera frame")
-        return None, None, None
+        return None, None, None, None
 
     scene = ensure_held_claw_closed(sock, camera, scene, label="Delivery verify")
 
     if scene is None:
         print("Delivery verify: could not close claw after open_claw detection")
-        return None, None, None
+        return None, None, None, None
 
     robot_pose = scene["robot_pose"]
     grappler_point = scene["grappler_point"]
@@ -771,28 +1095,36 @@ def choose_fresh_delivery_option(sock, camera, goal_name):
 
     if robot_pose is None:
         print("Delivery verify: could not detect robot pose")
-        return None, None, None
+        return None, None, None, None
 
     if goals is None:
         print("Delivery verify: could not detect both goal markers")
-        return robot_pose, grappler_point, None
+        return scene, robot_pose, grappler_point, None
 
     goal_a, goal_b = goals
     goal_marker = goal_a if goal_name == "A" else goal_b
-    return robot_pose, grappler_point, delivery_goal_option(goal_name, goal_marker)
+    return scene, robot_pose, grappler_point, delivery_goal_option(goal_name, goal_marker)
 
 
 def verify_delivery_alignment(sock, camera, goal_name, initial_option):
     option = initial_option
+    max_attempts = max(
+        int(DELIVERY_FINAL_CORRECTION_ATTEMPTS),
+        int(DELIVERY_GOAL_DISTANCE_CORRECTION_ATTEMPTS),
+    )
 
-    for attempt in range(1, DELIVERY_FINAL_CORRECTION_ATTEMPTS + 2):
-        robot_pose, grappler_point, fresh_option = choose_fresh_delivery_option(sock, camera, goal_name)
+    for attempt in range(1, max_attempts + 2):
+        scene, robot_pose, grappler_point, fresh_option = choose_fresh_delivery_option(sock, camera, goal_name)
 
         if robot_pose is None:
             return False
 
         if grappler_point is None:
             print("Delivery verify: could not detect claw; not pushing")
+            if attempt <= max_attempts and scene is not None and robot_body_visible(scene["vision_scene"]):
+                if not reverse_for_missing_grappler(sock, label="Delivery verify"):
+                    return False
+                continue
             return False
 
         if fresh_option is None:
@@ -806,6 +1138,7 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
         marker = option["marker"]
         claw_target = option["claw_target"]
         goal_heading = delivery_goal_heading(goal_name)
+        heading_tolerance = delivery_goal_heading_tolerance(goal_name)
         _x, _y, current_heading = robot_pose
         position_error = point_distance(center, waypoint)
         claw_error = point_distance(grappler_point, claw_target)
@@ -813,14 +1146,18 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
         claw_on_goal_side = delivery_claw_is_on_goal_side(goal_name, marker, grappler_point)
         position_ok = position_error <= DELIVERY_POSITION_TOLERANCE
         claw_ok = claw_error <= DELIVERY_CLAW_POSITION_TOLERANCE
-        heading_ok = abs(heading_error) <= DELIVERY_HEADING_TOLERANCE
+        heading_ok = abs(heading_error) <= heading_tolerance
         center_position_required = bool(DELIVERY_REQUIRE_CENTER_POSITION)
+        goal_distance = delivery_goal_distance_status(goal_name, center, grappler_point)
+        goal_distance_ok = goal_distance["ok"]
 
         print(
             "Delivery verify attempt {}: center={}, claw={}, marker={}, "
             "claw_target={}, waypoint={}, position_error={:.1f}, "
             "claw_error={:.1f}, heading_error={:.1f}, position_ok={}, "
-            "claw_ok={}, heading_ok={}, center_required={}, claw_on_goal_side={}".format(
+            "claw_ok={}, heading_ok={}, center_required={}, claw_on_goal_side={}, "
+            "heading_tolerance={:.1f}, center_goal_distance={:.1f}, "
+            "claw_goal_distance={:.1f}, goal_distance_ok={}".format(
                 attempt,
                 center,
                 grappler_point,
@@ -835,6 +1172,10 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
                 heading_ok,
                 center_position_required,
                 claw_on_goal_side,
+                heading_tolerance,
+                goal_distance["center_distance"],
+                goal_distance["claw_distance"],
+                goal_distance_ok,
             )
         )
 
@@ -845,6 +1186,53 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
         if not delivery_claw_is_clear_of_edge(grappler_point, margin=5):
             print("Delivery safety: claw {} is touching map edge; not pushing".format(grappler_point))
             return False
+
+        if not goal_distance_ok:
+            if attempt > DELIVERY_GOAL_DISTANCE_CORRECTION_ATTEMPTS:
+                print(
+                    "Delivery safety: still too close to Goal_{}; not pushing".format(
+                        goal_name,
+                    )
+                )
+                return False
+
+            safe_center = delivery_safe_center_for_goal_distance(
+                goal_name,
+                center,
+                grappler_point,
+            )
+            print(
+                "Delivery safety: too close to Goal_{} "
+                "(center distance {:.1f}, claw distance {:.1f}); moving inward to {}".format(
+                    goal_name,
+                    goal_distance["center_distance"],
+                    goal_distance["claw_distance"],
+                    safe_center,
+                )
+            )
+
+            reverse_result = try_reverse_goal_distance_correction(
+                sock,
+                camera,
+                robot_pose,
+                safe_center,
+                heading_error,
+            )
+
+            if reverse_result is None:
+                if not goto_delivery_target(
+                    sock,
+                    camera,
+                    scene,
+                    robot_pose,
+                    safe_center,
+                    label="Delivery goal-distance correction",
+                ):
+                    return False
+            elif not reverse_result:
+                return False
+
+            continue
 
         if claw_ok and heading_ok and claw_on_goal_side and (position_ok or not center_position_required):
             if not position_ok:
@@ -890,13 +1278,18 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
 
         if not heading_ok:
             print("Delivery verify: correcting heading before push")
-            if not turn_delivery_to_heading(sock, camera, goal_heading):
+            if not turn_delivery_to_heading(
+                sock,
+                camera,
+                goal_heading,
+                tolerance_degrees=heading_tolerance,
+            ):
                 return False
 
     return False
 
 
-def deliver_held_ball_to_goal(sock, camera):
+def deliver_held_ball_to_goal(sock, camera, ball_color=None):
     """Line up with one goal marker and run the EV3 delivery motion."""
     scene = capture_delivery_scene(camera)
 
@@ -951,7 +1344,13 @@ def deliver_held_ball_to_goal(sock, camera):
         return False
 
     goal_a, goal_b = goals
-    delivery_option = choose_delivery_goal(robot_pose, goal_a, goal_b)
+    goal_preference = delivery_goal_preference_for_ball(ball_color)
+    delivery_option = choose_delivery_goal(
+        robot_pose,
+        goal_a,
+        goal_b,
+        preference=goal_preference,
+    )
 
     if delivery_option is None:
         print("Delivery: no safely approachable goal")
@@ -962,14 +1361,16 @@ def deliver_held_ball_to_goal(sock, camera):
     claw_target = delivery_option["claw_target"]
     delivery_waypoint = delivery_option["waypoint"]
     goal_heading = delivery_goal_heading(goal_name)
+    heading_tolerance = delivery_goal_heading_tolerance(goal_name)
 
     print(
-        "Delivery: chosen Goal_{} marker={}, claw_target={}, waypoint={}, heading={:.1f}".format(
+        "Delivery: chosen Goal_{} marker={}, claw_target={}, waypoint={}, heading={:.1f}, tolerance={:.1f}".format(
             goal_name,
             goal_marker,
             claw_target,
             delivery_waypoint,
             goal_heading,
+            heading_tolerance,
         )
     )
 
@@ -977,7 +1378,12 @@ def deliver_held_ball_to_goal(sock, camera):
         return False
 
     print("Delivery: aligning to goal heading {:.1f}".format(goal_heading))
-    if not turn_delivery_to_heading(sock, camera, goal_heading):
+    if not turn_delivery_to_heading(
+        sock,
+        camera,
+        goal_heading,
+        tolerance_degrees=heading_tolerance,
+    ):
         return False
 
     if not verify_delivery_alignment(sock, camera, goal_name, delivery_option):

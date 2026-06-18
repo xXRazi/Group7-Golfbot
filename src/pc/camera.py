@@ -17,9 +17,6 @@ from settings import (
 )
 
 
-width = MAP_WIDTH
-height = MAP_HEIGHT
-
 _PERSPECTIVE_TARGET_POINTS = (
     (0, 0),
     (MAP_WIDTH - 1, 0),

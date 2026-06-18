@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
 from ev3dev2.motor import MoveTank, MediumMotor, OUTPUT_A, OUTPUT_D, OUTPUT_B
-from time import sleep
 
 Move_Straight = MoveTank(OUTPUT_D, OUTPUT_A)
 claw = MediumMotor(OUTPUT_B)
 
-drive_direction = 1
-claw_direction = 1
-
 
 def open_claw():
     claw.on_for_rotations(100, 3.5, block=True)
+
 
 def close_claw():
     claw.on_for_rotations(-100, 3.5)

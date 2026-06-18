@@ -11,18 +11,25 @@ import os
 from ev3dev2.motor import OUTPUT_A, OUTPUT_D, MoveTank, SpeedPercent
 
 
+MOTION_CALIBRATION_FILENAME = "motion_calibration.txt"
+
+
+def _calibration_path(filename):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 def _load_degrees_per_turn_degree(default=2.35):
     """Load DEGREES_PER_TURN_DEGREE from calibration.txt if it exists.
 
-    The file is written by calibrate_turn.py on the PC and must be copied
+    The file is written by calibrate_motion.py on the PC and must be copied
     to the same directory as this file on the EV3 SD card.
     If missing, the hard-coded default is used and a warning is printed.
     """
-    calib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "calibration.txt")
+    calib_path = _calibration_path("calibration.txt")
     if os.path.exists(calib_path):
         try:
-            value = float(open(calib_path).read().strip())
+            with open(calib_path, "r") as calibration_file:
+                value = float(calibration_file.read().strip())
             print("[motor_control] Loaded DEGREES_PER_TURN_DEGREE={:.4f} from {}".format(
                 value, calib_path))
             return value
@@ -32,9 +39,78 @@ def _load_degrees_per_turn_degree(default=2.35):
     else:
         print("[motor_control] WARNING: No calibration.txt found at {}. "
               "Using default DEGREES_PER_TURN_DEGREE={}. "
-              "Run calibrate_turn.py on the PC to generate it.".format(
+              "Run calibrate_motion.py on the PC to generate it.".format(
                   calib_path, default))
     return default
+
+
+def _load_motion_calibration(default_turn, default_drive):
+    """Load turn and drive scaling from motion_calibration.txt if present."""
+    calib_path = _calibration_path(MOTION_CALIBRATION_FILENAME)
+    turn = float(default_turn)
+    drive = float(default_drive)
+
+    if not os.path.exists(calib_path):
+        return turn, drive
+
+    try:
+        with open(calib_path, "r") as calibration_file:
+            lines = calibration_file.readlines()
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            if "=" in stripped:
+                name, value = stripped.split("=", 1)
+                name = name.strip().lower()
+                value = float(value.strip())
+
+                if name in ("degrees_per_turn_degree", "turn"):
+                    turn = value
+                elif name in ("degrees_per_map_unit", "drive"):
+                    drive = value
+
+            else:
+                parts = stripped.split()
+
+                if len(parts) >= 2:
+                    turn = float(parts[0])
+                    drive = float(parts[1])
+
+        print("[motor_control] Loaded motion calibration turn={:.4f}, drive={:.4f} from {}".format(
+            turn, drive, calib_path))
+
+    except (ValueError, OSError) as exc:
+        print("[motor_control] WARNING: Could not read {}: {}. Using defaults.".format(
+            calib_path, exc))
+        return float(default_turn), float(default_drive)
+
+    if turn <= 0.0 or drive <= 0.0:
+        print("[motor_control] WARNING: Invalid motion calibration turn={:.4f}, drive={:.4f}. "
+              "Using defaults.".format(turn, drive))
+        return float(default_turn), float(default_drive)
+
+    return turn, drive
+
+
+def _save_motion_calibration(degrees_per_turn_degree, degrees_per_map_unit):
+    calib_path = _calibration_path(MOTION_CALIBRATION_FILENAME)
+
+    try:
+        with open(calib_path, "w") as calibration_file:
+            calibration_file.write("degrees_per_turn_degree={:.6f}\n".format(
+                float(degrees_per_turn_degree)))
+            calibration_file.write("degrees_per_map_unit={:.6f}\n".format(
+                float(degrees_per_map_unit)))
+        print("[motor_control] Saved motion calibration to {}".format(calib_path))
+        return True
+
+    except OSError as exc:
+        print("[motor_control] WARNING: Could not save {}: {}".format(calib_path, exc))
+        return False
 
 
 class MotorController:
@@ -44,15 +120,19 @@ class MotorController:
     MAP_COLS = 640
     MAP_ROWS = 480
 
-    CM_PER_MAP_UNIT = 0.26
+    DEFAULT_CM_PER_MAP_UNIT = 0.26
+    DEGREES_PER_CM = 20
 
-    # Loaded from calibration.txt - do NOT hard-code this.
-    # Run calibrate_turn.py on the PC whenever wheels are changed,
-    # then copy the resulting calibration.txt to the EV3.
-    DEGREES_PER_TURN_DEGREE = _load_degrees_per_turn_degree(default=2.35)
+    # Loaded from motion_calibration.txt when present. The legacy
+    # calibration.txt turn value is still used as a fallback.
+    DEFAULT_DEGREES_PER_TURN_DEGREE = _load_degrees_per_turn_degree(default=2.35)
+    DEFAULT_DEGREES_PER_MAP_UNIT = DEGREES_PER_CM * DEFAULT_CM_PER_MAP_UNIT
 
-    DEGREES_PER_CM       = 20
-    DEGREES_PER_MAP_UNIT = DEGREES_PER_CM * CM_PER_MAP_UNIT
+    DEGREES_PER_TURN_DEGREE, DEGREES_PER_MAP_UNIT = _load_motion_calibration(
+        DEFAULT_DEGREES_PER_TURN_DEGREE,
+        DEFAULT_DEGREES_PER_MAP_UNIT,
+    )
+    CM_PER_MAP_UNIT = DEGREES_PER_MAP_UNIT / float(DEGREES_PER_CM)
 
     LEFT_MOTOR_DIRECTION  = -1
     RIGHT_MOTOR_DIRECTION = -1
@@ -140,6 +220,35 @@ class MotorController:
         self.right_trim = self.clamp_speed(right_trim)
         print("CALIBRATE  left_trim={:.2f}  right_trim={:.2f}".format(
             self.left_trim, self.right_trim))
+
+    def set_motion_calibration(self, degrees_per_turn_degree, degrees_per_map_unit, persist=True):
+        degrees_per_turn_degree = float(degrees_per_turn_degree)
+        degrees_per_map_unit = float(degrees_per_map_unit)
+
+        if degrees_per_turn_degree <= 0.0 or degrees_per_map_unit <= 0.0:
+            print("MOTION CALIBRATION ERROR: turn={:.4f}, drive={:.4f}".format(
+                degrees_per_turn_degree,
+                degrees_per_map_unit,
+            ))
+            return False
+
+        self.DEGREES_PER_TURN_DEGREE = degrees_per_turn_degree
+        self.DEGREES_PER_MAP_UNIT = degrees_per_map_unit
+        self.CM_PER_MAP_UNIT = degrees_per_map_unit / float(self.DEGREES_PER_CM)
+
+        print("MOTION CALIBRATION set: turn={:.4f}, drive={:.4f}, cm_per_map_unit={:.4f}".format(
+            self.DEGREES_PER_TURN_DEGREE,
+            self.DEGREES_PER_MAP_UNIT,
+            self.CM_PER_MAP_UNIT,
+        ))
+
+        if persist:
+            return _save_motion_calibration(
+                self.DEGREES_PER_TURN_DEGREE,
+                self.DEGREES_PER_MAP_UNIT,
+            )
+
+        return True
 
     def turn(self, angle, speed=0):
         """Rotate in place by angle degrees and update heading.

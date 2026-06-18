@@ -14,12 +14,12 @@ from camera import (
     save_frame,
     warp_frame,
 )
-from collection_algorithm import A_star, get_h_list
+from collection_algorithm import A_star
 from com_protocol import HOST, PORT, build_handshake, build_mapsize, send_command
 from delivery import deliver_held_ball_to_goal
 from id_color import ball_pos_approx_shape, goals_pos_approx, grapler_pos_approx, robot_pose_approx
 from Imagesplitter import create_matrix
-from map_utils import path_is_valid
+from map_utils import path_is_valid, point_distance, robot_center_point
 from path_obstacles import (
     clear_path_endpoint,
     clear_path_endpoint_preserving_obstacles,
@@ -29,6 +29,8 @@ from path_obstacles import (
     red_cross_obstacle_regions,
 )
 from pickup import approach_ball_and_close_claw
+from robot_sync import reverse_for_missing_grappler
+from scene_analysis import robot_body_visible
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
     CAMERA_INDEX,
@@ -36,6 +38,7 @@ from settings import (
     EV3_MAP_WIDTH,
     FRAME_CAPTURE_INTERVAL_SECONDS,
     IMAGE_DIR,
+    MAP_WIDTH,
     PICKUP_BALL_COLORS,
     PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
     PICKUP_RED_CROSS_CLEARANCE_MARGIN,
@@ -51,6 +54,7 @@ class AutonomousState:
     image_count: int = 0
     path_executed: bool = False
     pickup_started: bool = False
+    held_ball_color: str = None
     begin_time: float = 0.0
     last_capture_time: float = 0.0
 
@@ -129,22 +133,45 @@ def clear_pickup_ball_endpoint(
     )
 
 
-def sort_balls_by_distance_to_grappler(ball_targets, grapler_point):
+def map_half_for_point(point):
+    _row, col = point
+    return "left" if float(col) < MAP_WIDTH / 2.0 else "right"
+
+
+def orange_priority_is_active(ball_color, robot_pose, ball_point):
+    if str(ball_color).strip().upper() != "O":
+        return False
+
+    robot_point = robot_center_point(robot_pose)
+    return map_half_for_point(robot_point) == map_half_for_point(ball_point)
+
+
+def sort_balls_by_pickup_priority(ball_targets, grapler_point, robot_pose):
     paired_targets = []
 
     for target in ball_targets:
         point = target["point"]
-        distance = get_h_list(grapler_point[0], grapler_point[1], point[0], point[1])[0]
-        paired_targets.append((distance, target))
+        distance = point_distance(grapler_point, point)
+        orange_priority = orange_priority_is_active(target["color"], robot_pose, point)
+        priority = 0 if orange_priority else 1
+        paired_targets.append((priority, distance, orange_priority, target))
 
-    paired_targets.sort(key=lambda item: item[0])
-    sorted_targets = [target for _distance, target in paired_targets]
+    paired_targets.sort(key=lambda item: (item[0], item[1]))
+    sorted_targets = [
+        target for _priority, _distance, _orange_priority, target in paired_targets
+    ]
 
     print(
-        "Pickup ball targets by distance:",
+        "Pickup ball targets by priority:",
         [
-            "{}@{}:{:.1f}".format(target["color"], target["point"], distance)
-            for distance, target in paired_targets
+            "{}@{}:priority={},distance={:.1f},orange_same_half={}".format(
+                target["color"],
+                target["point"],
+                priority,
+                distance,
+                orange_priority,
+            )
+            for priority, distance, orange_priority, target in paired_targets
         ],
     )
     return sorted_targets
@@ -183,7 +210,7 @@ def detect_pickup_ball_targets(color_matrix, vision_scene=None):
     return ball_targets
 
 
-def detect_pickup_target(color_matrix, vision_scene=None):
+def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
     ball_targets = detect_pickup_ball_targets(color_matrix, vision_scene)
 
     grapler_point = None
@@ -201,6 +228,8 @@ def detect_pickup_target(color_matrix, vision_scene=None):
 
     if grapler_point is None:
         print("No grapler detected; cannot collect ball")
+        if sock is not None and robot_body_visible(vision_scene):
+            reverse_for_missing_grappler(sock, label="Pickup target")
         return None
 
     current_robot_pose = None
@@ -231,7 +260,11 @@ def detect_pickup_target(color_matrix, vision_scene=None):
         print("No pickup balls detected for colors {}".format(PICKUP_BALL_COLORS))
         return None
 
-    ball_targets = sort_balls_by_distance_to_grappler(ball_targets, grapler_point)
+    ball_targets = sort_balls_by_pickup_priority(
+        ball_targets,
+        grapler_point,
+        current_robot_pose,
+    )
     pickup_cross_regions = red_cross_obstacle_regions(
         color_matrix,
         vision_scene,
@@ -315,12 +348,17 @@ def handle_pickup_and_delivery(sock, camera, state, color_matrix, pickup_target)
     print("Pickup succeeded; starting delivery")
     state.path_executed = True
     state.pickup_started = False
+    state.held_ball_color = pickup_target["ball_color"]
 
     return retry_delivery(sock, camera, state)
 
 
 def retry_delivery(sock, camera, state):
-    delivery_success = deliver_held_ball_to_goal(sock, camera)
+    delivery_success = deliver_held_ball_to_goal(
+        sock,
+        camera,
+        ball_color=state.held_ball_color,
+    )
 
     if delivery_success:
         print("Delivery complete")
@@ -330,6 +368,7 @@ def retry_delivery(sock, camera, state):
 
         state.path_executed = False
         state.pickup_started = False
+        state.held_ball_color = None
         return False
 
     print("Delivery did not finish; keeping claw closed and retrying on a later frame")
@@ -402,7 +441,7 @@ def run_autonomous_camera():
                         break
                     continue
 
-                pickup_target = detect_pickup_target(color_matrix, vision_scene)
+                pickup_target = detect_pickup_target(color_matrix, vision_scene, sock=sock)
 
                 if pickup_target is None:
                     continue
