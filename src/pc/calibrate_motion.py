@@ -51,7 +51,7 @@ def parse_args():
     parser.add_argument("--host", default=HOST, help="EV3 host name or IP address.")
     parser.add_argument("--port", type=int, default=PORT, help="EV3 TCP port.")
     parser.add_argument("--camera", type=int, default=CAMERA_INDEX, help="OpenCV camera index.")
-    parser.add_argument("--iterations", type=int, default=3, help="Calibration passes per phase.")
+    parser.add_argument("--iterations", type=int, default=5, help="Calibration passes per phase.")
     parser.add_argument("--turn-angle", type=float, default=90.0, help="Turn angle per pass.")
     parser.add_argument(
         "--drive-distance",

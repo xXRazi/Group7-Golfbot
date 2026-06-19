@@ -24,6 +24,7 @@ from settings import (
     SYNC_IMAGE_PATH,
 )
 from vision_debug_capture import save_missing_detection_frame
+from vision_detection import has_vision_path_overlay, set_vision_path_overlay
 
 
 _EV3_COORDINATE_WARNING_PRINTED = False
@@ -319,6 +320,12 @@ def goto_map_point_with_pose(sock, camera, robot_pose, target_point, label="Deli
     )
 
     if robot_pose is not None:
+        if not has_vision_path_overlay():
+            set_vision_path_overlay(
+                [robot_center_point(robot_pose), (target_row, target_col)],
+                label=label,
+                color=(0, 255, 255),
+            )
         if not sync_robot_pose_value(sock, robot_pose, label="{} pre-GOTO".format(label)):
             return False
     else:
@@ -423,6 +430,13 @@ def goto_map_point_with_pose_pre_turn(
 
         if pose is None:
             return False
+
+    if not has_vision_path_overlay():
+        set_vision_path_overlay(
+            [robot_center_point(pose), target_point],
+            label=label,
+            color=(0, 255, 255),
+        )
 
     pose = _pre_turn_for_goto(
         sock,

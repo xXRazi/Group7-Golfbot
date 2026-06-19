@@ -22,7 +22,9 @@ from map_utils import (
 from path_obstacles import (
     clear_path_endpoint,
     clear_path_endpoint_preserving_obstacles,
+    choose_safe_path_lookahead,
     clone_path_matrix,
+    create_empty_path_matrix,
     mark_red_cross_obstacles,
     point_in_obstacle_regions,
     red_cross_obstacle_regions,
@@ -63,6 +65,7 @@ from settings import (
     PICKUP_OFFCENTER_SCOOP_SCALE_LIMIT,
     PICKUP_PREAPPROACH_DISTANCE,
     PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    PICKUP_RED_CROSS_LOOKAHEAD_DISTANCE,
     PICKUP_SERVO_FAR_FORWARD_STEP,
     PICKUP_SERVO_MAX_FORWARD_STEP,
     PICKUP_SERVO_MAX_ITERATIONS,
@@ -72,10 +75,29 @@ from settings import (
     PICKUP_SETTLE_SECONDS,
     PICKUP_STOP_DISTANCE,
     PICKUP_WAYPOINT_STEP_SIZE,
+    RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
     ROBOT_POSE_RETRY_FRAMES,
     SYNC_DELAY_SECONDS,
     USE_COARSE_PICKUP_PREAPPROACH,
 )
+from vision_detection import set_vision_path_overlay
+
+
+def planning_matrix_from_scene(scene):
+    if scene is None:
+        return create_empty_path_matrix()
+
+    path_matrix = scene.get("path_matrix")
+
+    if path_matrix is not None:
+        return path_matrix
+
+    color_matrix = scene.get("color_matrix")
+
+    if color_matrix is not None:
+        return color_matrix
+
+    return create_empty_path_matrix()
 
 
 def estimate_grappler_offset(robot_pose, grappler_point):
@@ -291,10 +313,10 @@ def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_
     if scene is None:
         return None
 
-    color_matrix = scene.get("color_matrix")
+    base_matrix = planning_matrix_from_scene(scene)
     vision_scene = scene.get("vision_scene")
     regions = red_cross_obstacle_regions(
-        color_matrix,
+        base_matrix,
         vision_scene,
         margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     )
@@ -302,7 +324,7 @@ def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_
     if not segment_intersects_regions(start_point, target_point, regions):
         return None
 
-    path_matrix = clone_path_matrix(color_matrix)
+    path_matrix = clone_path_matrix(base_matrix)
     mark_red_cross_obstacles(
         path_matrix,
         vision_scene,
@@ -311,7 +333,7 @@ def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_
     clear_path_endpoint(path_matrix, start_point, radius=10, value=".")
     clear_path_endpoint_preserving_obstacles(
         path_matrix,
-        color_matrix,
+        path_matrix,
         target_point,
         radius=PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
         value=".",
@@ -327,14 +349,54 @@ def red_cross_routed_pickup_step(scene, start_point, target_point, distance_map_
         )
         return False
 
-    step_target = path_point_at_distance(robot_path, distance_map_units)
+    lookahead_distance = max(
+        float(distance_map_units),
+        float(PICKUP_RED_CROSS_LOOKAHEAD_DISTANCE),
+    )
+    step_target = choose_safe_path_lookahead(
+        robot_path,
+        start_point,
+        regions,
+        min_distance=max(
+            float(distance_map_units),
+            float(RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS),
+        ),
+        max_distance=lookahead_distance,
+        acceptance_radius=RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
+    )
 
     if step_target is None:
-        return False
+        step_target = path_point_at_distance(robot_path, distance_map_units)
+
+        if (
+            step_target is None
+            or point_in_obstacle_regions(step_target, regions)
+            or segment_intersects_regions(start_point, step_target, regions)
+        ):
+            print("Pickup servo: red cross route had no safe lookahead waypoint")
+            return False
+
+    set_vision_path_overlay(
+        [
+            {
+                "points": robot_path,
+                "label": "Pickup red-cross route",
+                "color": (255, 0, 255),
+            },
+            {
+                "points": [start_point, step_target],
+                "label": "Pickup lookahead",
+                "color": (0, 255, 255),
+            },
+        ],
+        label="Pickup route",
+    )
 
     print(
-        "Pickup servo: red cross blocks direct step; routing next step via {}".format(
+        "Pickup servo: red cross blocks direct step; routing lookahead via {} "
+        "(lookahead {:.1f})".format(
             step_target,
+            lookahead_distance,
         )
     )
     return step_target
@@ -416,13 +478,14 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
         return None
 
     color_matrix = scene["color_matrix"]
+    path_matrix = scene["path_matrix"]
     vision_scene = scene["vision_scene"]
     robot_pose = robot_pose_from_sources(color_matrix, vision_scene)
     grappler_point = grappler_point_from_sources(color_matrix, vision_scene)
     balls = ball_points_from_sources(color_matrix, vision_scene, ball_color)
 
     balls, blocked_balls = filter_balls_for_red_cross_clearance(
-        color_matrix,
+        path_matrix,
         vision_scene,
         balls,
     )
@@ -430,6 +493,7 @@ def capture_pickup_scene_frame(camera, ball_color="W"):
 
     return {
         "color_matrix": color_matrix,
+        "path_matrix": path_matrix,
         "vision_scene": vision_scene,
         "robot_pose": robot_pose,
         "grappler_point": grappler_point,
@@ -522,6 +586,11 @@ def drive_toward_map_point(sock, camera, robot_pose, target_point, distance_map_
             target_row,
         )
     )
+    set_vision_path_overlay(
+        [center_point, (target_row, target_col), target_point],
+        label="Pickup servo step",
+        color=(0, 255, 255),
+    )
 
     if not sync_robot_pose_value(sock, robot_pose, label="Pickup servo pre-GOTO"):
         return False
@@ -540,10 +609,10 @@ def final_scoop_is_safe_from_red_cross(scene, robot_pose, target_point):
     if scene is None:
         return True
 
-    color_matrix = scene.get("color_matrix")
+    base_matrix = planning_matrix_from_scene(scene)
     vision_scene = scene.get("vision_scene")
     regions = red_cross_obstacle_regions(
-        color_matrix,
+        base_matrix,
         vision_scene,
         margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     )
@@ -616,6 +685,11 @@ def final_scoop_forward_before_close(
             target_x,
             target_y,
         )
+    )
+    set_vision_path_overlay(
+        [robot_center_point(robot_pose), target_point],
+        label="Pickup final scoop",
+        color=(0, 255, 255),
     )
 
     if not sync_robot_pose_value(sock, robot_pose, label="Pickup final scoop pre-GOTO"):
@@ -896,6 +970,11 @@ def final_pickup_camera_nudge(sock, camera, ball_color="W", allow_extra_turn=Tru
             target_x,
             target_y,
         )
+    )
+    set_vision_path_overlay(
+        [robot_center_point(robot_pose), (target_y, target_x)],
+        label="Pickup final nudge",
+        color=(0, 255, 255),
     )
 
     ev3_x, ev3_y = map_xy_to_ev3_xy(target_x, target_y)

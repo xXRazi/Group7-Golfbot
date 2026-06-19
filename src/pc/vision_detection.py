@@ -27,6 +27,7 @@ _UNAVAILABLE_MESSAGE_PRINTED = False
 _LIVE_VIEW_UNAVAILABLE_MESSAGE_PRINTED = False
 _LIVE_VIEW_FAILED = False
 _LIVE_VIEW_QUIT_REQUESTED = False
+_PATH_OVERLAYS = []
 
 _CLASS_KIND_BY_NAME = {
     "biggoal": "goal",
@@ -52,6 +53,8 @@ _KIND_COLORS = {
     "robot": (255, 180, 0),
     "whiteball": (255, 255, 255),
 }
+
+_LABEL_HIDDEN_KINDS = {"goal", "whiteball"}
 
 
 @dataclass(frozen=True)
@@ -365,6 +368,112 @@ def _draw_label(cv, image, text, x, y, color):
     )
 
 
+def _is_map_point(value):
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return False
+
+    try:
+        float(value[0])
+        float(value[1])
+    except (TypeError, ValueError):
+        return False
+
+    return True
+
+
+def _as_overlay_paths(paths, label, color):
+    if paths is None:
+        return []
+
+    if isinstance(paths, dict):
+        paths = [paths]
+    elif paths and _is_map_point(paths[0]):
+        paths = [{"points": paths, "label": label, "color": color}]
+
+    overlays = []
+
+    for index, path in enumerate(paths):
+        if isinstance(path, dict):
+            points = path.get("points", [])
+            path_label = path.get("label", label)
+            path_color = path.get("color", color)
+        else:
+            points = path
+            path_label = label
+            path_color = color
+
+        clean_points = [
+            (int(round(point[0])), int(round(point[1])))
+            for point in points
+            if _is_map_point(point)
+        ]
+
+        if len(clean_points) < 2:
+            continue
+
+        if not path_label and len(paths) > 1:
+            path_label = "Path {}".format(index + 1)
+
+        overlays.append(
+            {
+                "points": clean_points,
+                "label": path_label,
+                "color": path_color,
+            }
+        )
+
+    return overlays
+
+
+def set_vision_path_overlay(paths, label="Planned path", color=(0, 255, 255)):
+    global _PATH_OVERLAYS
+    _PATH_OVERLAYS = _as_overlay_paths(paths, label, color)
+
+
+def has_vision_path_overlay():
+    return bool(_PATH_OVERLAYS)
+
+
+def clear_vision_path_overlay():
+    global _PATH_OVERLAYS
+    _PATH_OVERLAYS = []
+
+
+def _draw_path_overlay(cv, image, frame_shape, scale):
+    if not _PATH_OVERLAYS:
+        return
+
+    for overlay in _PATH_OVERLAYS:
+        points = overlay["points"]
+        color = overlay["color"]
+        display_points = [
+            _map_point_to_display_xy(point, frame_shape, scale)
+            for point in points
+        ]
+
+        for index in range(1, len(display_points)):
+            cv.line(
+                image,
+                display_points[index - 1],
+                display_points[index],
+                color,
+                2,
+                cv.LINE_AA,
+            )
+
+        for point in display_points:
+            cv.circle(image, point, 2, color, -1)
+
+        start_x, start_y = display_points[0]
+        end_x, end_y = display_points[-1]
+        cv.circle(image, (start_x, start_y), 6, (0, 255, 0), -1)
+        cv.circle(image, (end_x, end_y), 7, (0, 0, 255), -1)
+
+        label = overlay.get("label")
+        if label:
+            _draw_label(cv, image, label, start_x + 8, start_y - 8, color)
+
+
 def _fixed_goal_claw_target(goal_name, marker):
     row, col = marker
     distance = float(DELIVERY_CLAW_TO_MARKER_DISTANCE)
@@ -386,17 +495,6 @@ def _draw_goal_marker_overlay(cv, image, frame_shape, scale, goal_name, marker, 
     cv.circle(image, (marker_x, marker_y), 7, color, 2)
     cv.circle(image, (target_x, target_y), 5, (0, 255, 0), -1)
     cv.line(image, (target_x, target_y), (marker_x, marker_y), (0, 255, 0), 1)
-
-    label_x = max(0, min(image.shape[1] - 1, marker_x + 8))
-    label_y = max(0, min(image.shape[0] - 1, marker_y - tick - 4))
-    _draw_label(
-        cv,
-        image,
-        "Goal {} fixed map={}".format(goal_name, marker),
-        label_x,
-        label_y,
-        color,
-    )
 
 
 def _draw_fixed_goal_overlay(cv, image, frame_shape, scale):
@@ -428,15 +526,15 @@ def _live_view_frame(cv, frame):
         return frame.copy(), 1.0
 
     height, width = frame.shape[:2]
+    scale = float(VISION_LIVE_VIEW_MAX_WIDTH) / float(width)
 
-    if width <= VISION_LIVE_VIEW_MAX_WIDTH:
+    if abs(scale - 1.0) < 0.01:
         return frame.copy(), 1.0
 
-    scale = float(VISION_LIVE_VIEW_MAX_WIDTH) / float(width)
     resized = cv.resize(
         frame,
         (int(round(width * scale)), int(round(height * scale))),
-        interpolation=cv.INTER_AREA,
+        interpolation=cv.INTER_AREA if scale < 1.0 else cv.INTER_LINEAR,
     )
     return resized, scale
 
@@ -478,7 +576,8 @@ def show_vision_live_view(frame, scene):
 
             cv.rectangle(display_frame, (left, top), (right, bottom), color, 2)
             cv.circle(display_frame, center, 4, color, -1)
-            _draw_label(cv, display_frame, label, left, top, color)
+            if detection.kind not in _LABEL_HIDDEN_KINDS:
+                _draw_label(cv, display_frame, label, left, top, color)
 
         robot = scene.best("robot")
         claw = scene.best("claw")
@@ -487,6 +586,8 @@ def show_vision_live_view(frame, scene):
             robot_center = _scaled_xy(*_bbox_center(robot.bbox), scale)
             claw_center = _scaled_xy(*_bbox_center(claw.bbox), scale)
             cv.line(display_frame, robot_center, claw_center, (0, 255, 0), 2)
+
+        _draw_path_overlay(cv, display_frame, frame.shape, scale)
 
         cv.putText(
             display_frame,

@@ -1,6 +1,8 @@
 import math
 
 from settings import (
+    MAP_HEIGHT,
+    MAP_WIDTH,
     RED_CROSS_AVOIDANCE_ENABLED,
     RED_CROSS_OBSTACLE_ARM_RATIO,
     RED_CROSS_OBSTACLE_MARGIN,
@@ -9,6 +11,12 @@ from settings import (
 
 
 RED_CROSS_BLOCKED_VALUE = "X"
+
+
+def create_empty_path_matrix(row_count=MAP_HEIGHT, col_count=MAP_WIDTH, value="."):
+    row_count = max(1, int(row_count))
+    col_count = max(1, int(col_count))
+    return [[value for _col in range(col_count)] for _row in range(row_count)]
 
 
 def clone_path_matrix(color_matrix):
@@ -44,6 +52,72 @@ def point_in_obstacle_regions(point, regions):
             return True
 
     return False
+
+
+def _point_distance(a, b):
+    return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def choose_safe_path_lookahead(
+    robot_path,
+    start_point,
+    regions,
+    min_distance,
+    max_distance,
+    acceptance_radius=0.0,
+):
+    """
+    Pick a far-enough point on an A* path that is safe as one direct GOTO.
+
+    A* paths contain many exact grid points. The robot should not chase those
+    precise intermediate corners near the red cross, because EV3 GOTO turns
+    exactly toward every requested point. This returns the farthest safe
+    lookahead point in the requested distance window.
+    """
+    if not robot_path or len(robot_path) < 2:
+        return None
+
+    min_distance = max(0.0, float(min_distance))
+    max_distance = max(min_distance, float(max_distance))
+    acceptance_radius = max(0.0, float(acceptance_radius))
+    travelled = 0.0
+    previous_point = robot_path[0]
+    best_before_min = None
+    best_after_min = None
+
+    for point in robot_path[1:]:
+        travelled += _point_distance(previous_point, point)
+        previous_point = point
+
+        if travelled <= acceptance_radius:
+            continue
+
+        if _point_distance(start_point, point) <= acceptance_radius:
+            continue
+
+        if point_in_obstacle_regions(point, regions):
+            continue
+
+        if segment_intersects_regions(start_point, point, regions):
+            continue
+
+        if travelled < min_distance:
+            best_before_min = point
+            continue
+
+        if travelled <= max_distance:
+            best_after_min = point
+            continue
+
+        if best_after_min is not None:
+            break
+
+        return point
+
+    if best_after_min is not None:
+        return best_after_min
+
+    return best_before_min
 
 
 def clear_path_endpoint_preserving_obstacles(
@@ -192,14 +266,17 @@ def red_cross_obstacle_regions(
 ):
     if (
         not RED_CROSS_AVOIDANCE_ENABLED
-        or color_matrix is None
         or vision_scene is None
-        or not color_matrix
     ):
         return []
 
-    row_count = len(color_matrix)
-    col_count = len(color_matrix[0])
+    if color_matrix is not None and color_matrix:
+        row_count = len(color_matrix)
+        col_count = len(color_matrix[0])
+    else:
+        row_count = MAP_HEIGHT
+        col_count = MAP_WIDTH
+
     regions = []
 
     for detection in vision_scene.detections_for("redcross"):

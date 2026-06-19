@@ -24,6 +24,7 @@ from path_obstacles import (
     clear_path_endpoint,
     clear_path_endpoint_preserving_obstacles,
     clone_path_matrix,
+    create_empty_path_matrix,
     mark_red_cross_obstacles,
     point_in_obstacle_regions,
     red_cross_obstacle_regions,
@@ -46,7 +47,11 @@ from settings import (
     STOP_AFTER_SUCCESSFUL_DELIVERY,
 )
 from vision_debug_capture import save_missing_detection_frame
-from vision_detection import vision_live_view_quit_requested
+from vision_detection import (
+    clear_vision_path_overlay,
+    set_vision_path_overlay,
+    vision_live_view_quit_requested,
+)
 
 
 @dataclass
@@ -78,6 +83,10 @@ def capture_color_matrix(state, warped_frame):
     state.image_count += 1
 
     print("Vi tager et billede")
+
+    if not ALLOW_COLOR_DETECTION_FALLBACK:
+        return None
+
     return create_matrix(full_path)
 
 
@@ -88,14 +97,18 @@ def capture_detection_scene(state, warped_frame):
 
     return {
         "color_matrix": color_matrix,
+        "path_matrix": create_empty_path_matrix(),
         "vision_scene": vision_scene,
     }
 
 
-def prepare_pickup_path_matrix(color_matrix, grapler_point, ball_point, vision_scene=None):
-    path_matrix = clone_path_matrix(color_matrix)
+def prepare_pickup_path_matrix(path_matrix, grapler_point, ball_point, vision_scene=None):
+    if path_matrix is None:
+        path_matrix = create_empty_path_matrix()
+
+    path_matrix = clone_path_matrix(path_matrix)
     pickup_cross_regions = red_cross_obstacle_regions(
-        color_matrix,
+        path_matrix,
         vision_scene,
         margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     )
@@ -107,7 +120,7 @@ def prepare_pickup_path_matrix(color_matrix, grapler_point, ball_point, vision_s
     clear_path_endpoint(path_matrix, grapler_point, radius=8, value=".")
     clear_pickup_ball_endpoint(
         path_matrix,
-        color_matrix,
+        path_matrix,
         ball_point,
         radius=PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
         blocked_regions=pickup_cross_regions,
@@ -210,8 +223,11 @@ def detect_pickup_ball_targets(color_matrix, vision_scene=None):
     return ball_targets
 
 
-def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
+def detect_pickup_target(color_matrix, vision_scene=None, sock=None, path_matrix=None):
     ball_targets = detect_pickup_ball_targets(color_matrix, vision_scene)
+
+    if path_matrix is None:
+        path_matrix = create_empty_path_matrix()
 
     grapler_point = None
 
@@ -266,7 +282,7 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
         current_robot_pose,
     )
     pickup_cross_regions = red_cross_obstacle_regions(
-        color_matrix,
+        path_matrix,
         vision_scene,
         margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
     )
@@ -285,7 +301,7 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
             continue
 
         pickup_matrix = prepare_pickup_path_matrix(
-            color_matrix,
+            path_matrix,
             grapler_point,
             selected_ball_point,
             vision_scene,
@@ -309,6 +325,21 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
                 len(robot_path),
             )
         )
+        set_vision_path_overlay(
+            [
+                {
+                    "points": robot_path,
+                    "label": "Pickup A* path",
+                    "color": (255, 0, 255),
+                },
+                {
+                    "points": [grapler_point, selected_ball_point],
+                    "label": "Pickup direct claw line",
+                    "color": (0, 255, 255),
+                },
+            ],
+            label="Pickup path",
+        )
 
         return {
             "grapler_point": grapler_point,
@@ -322,14 +353,14 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None):
     return None
 
 
-def handle_pickup_and_delivery(sock, camera, state, color_matrix, pickup_target):
+def handle_pickup_and_delivery(sock, camera, state, path_matrix, pickup_target):
     if state.path_executed:
         return False
 
     pickup_success = approach_ball_and_close_claw(
         sock,
         camera,
-        color_matrix,
+        path_matrix,
         pickup_target["robot_path"],
         current_grappler_point=pickup_target["grapler_point"],
         current_robot_pose=pickup_target["robot_pose"],
@@ -434,6 +465,7 @@ def run_autonomous_camera():
             if startup_delay_has_elapsed(state, now) and capture_interval_has_elapsed(state, now):
                 scene = capture_detection_scene(state, warped_frame)
                 color_matrix = scene["color_matrix"]
+                path_matrix = scene["path_matrix"]
                 vision_scene = scene["vision_scene"]
 
                 if state.path_executed:
@@ -441,12 +473,18 @@ def run_autonomous_camera():
                         break
                     continue
 
-                pickup_target = detect_pickup_target(color_matrix, vision_scene, sock=sock)
+                pickup_target = detect_pickup_target(
+                    color_matrix,
+                    vision_scene,
+                    sock=sock,
+                    path_matrix=path_matrix,
+                )
 
                 if pickup_target is None:
+                    clear_vision_path_overlay()
                     continue
 
-                if handle_pickup_and_delivery(sock, camera, state, color_matrix, pickup_target):
+                if handle_pickup_and_delivery(sock, camera, state, path_matrix, pickup_target):
                     break
 
                 print_debug_detections(color_matrix, vision_scene)

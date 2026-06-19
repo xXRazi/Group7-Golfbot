@@ -6,6 +6,7 @@ from camera import (
     read_arena_frame,
 )
 from id_color import ball_pos_approx_shape, grapler_pos_approx, robot_pose_approx
+from path_obstacles import create_empty_path_matrix
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
@@ -26,8 +27,12 @@ def capture_vision_scene_frame(
     if warped_frame is None:
         return None
 
-    color_matrix = create_matrix_from_frame(warped_frame)
     vision_scene = detect_vision_from_warped_frame(warped_frame)
+    color_matrix = None
+
+    if ALLOW_COLOR_DETECTION_FALLBACK:
+        color_matrix = create_matrix_from_frame(warped_frame)
+
     save_missing_detection_frame(
         warped_frame,
         vision_scene,
@@ -38,6 +43,7 @@ def capture_vision_scene_frame(
 
     return {
         "color_matrix": color_matrix,
+        "path_matrix": create_empty_path_matrix(),
         "vision_scene": vision_scene,
         "warped_frame": warped_frame,
     }

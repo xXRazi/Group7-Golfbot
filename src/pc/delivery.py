@@ -19,7 +19,9 @@ from map_utils import (
 )
 from path_obstacles import (
     clear_path_endpoint,
+    choose_safe_path_lookahead,
     clone_path_matrix,
+    create_empty_path_matrix,
     mark_red_cross_obstacles,
     point_in_obstacle_regions,
     red_cross_obstacle_regions,
@@ -71,6 +73,7 @@ from settings import (
     DELIVERY_POSITION_TOLERANCE,
     DELIVERY_RED_CROSS_CLEARANCE_MARGIN,
     DELIVERY_RED_CROSS_RETRY_FRAMES,
+    DELIVERY_RED_CROSS_LOOKAHEAD_DISTANCE,
     DELIVERY_REQUIRE_CENTER_POSITION,
     DELIVERY_ROBOT_EDGE_MARGIN,
     DELIVERY_USE_FIXED_GOALS,
@@ -81,9 +84,28 @@ from settings import (
     MAP_WIDTH,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     PICKUP_SETTLE_SECONDS,
+    RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
     ROBOT_POSE_RETRY_FRAMES,
 )
+from vision_detection import set_vision_path_overlay
+
+
+def planning_matrix_from_scene(scene):
+    if scene is None:
+        return create_empty_path_matrix()
+
+    path_matrix = scene.get("path_matrix")
+
+    if path_matrix is not None:
+        return path_matrix
+
+    color_matrix = scene.get("color_matrix")
+
+    if color_matrix is not None:
+        return color_matrix
+
+    return create_empty_path_matrix()
 
 
 def capture_delivery_scene_frame(camera):
@@ -104,6 +126,7 @@ def capture_delivery_scene_frame(camera):
 
     return {
         "color_matrix": color_matrix,
+        "path_matrix": scene["path_matrix"],
         "vision_scene": vision_scene,
         "robot_pose": robot_pose,
         "grappler_point": grappler_point,
@@ -683,12 +706,11 @@ def try_reverse_goal_distance_correction(
 
 
 def delivery_path_matrix(scene, start_point, target_point):
-    color_matrix = scene.get("color_matrix") if scene is not None else None
-
-    if color_matrix is None:
+    if scene is None:
         return None, 0
 
-    path_matrix = clone_path_matrix(color_matrix)
+    base_matrix = planning_matrix_from_scene(scene)
+    path_matrix = clone_path_matrix(base_matrix)
     red_cross_count = mark_red_cross_obstacles(
         path_matrix,
         scene.get("vision_scene"),
@@ -703,10 +725,10 @@ def delivery_path_matrix(scene, start_point, target_point):
 
 
 def delivery_red_cross_regions(scene):
-    color_matrix = scene.get("color_matrix") if scene is not None else None
+    base_matrix = planning_matrix_from_scene(scene)
     vision_scene = scene.get("vision_scene") if scene is not None else None
     return red_cross_obstacle_regions(
-        color_matrix,
+        base_matrix,
         vision_scene,
         margin=DELIVERY_RED_CROSS_CLEARANCE_MARGIN,
     )
@@ -791,12 +813,33 @@ def choose_safe_delivery_waypoint(robot_path, start_point, target_point, regions
     if escape_point is not None:
         return escape_point
 
+    lookahead_point = choose_safe_path_lookahead(
+        robot_path,
+        start_point,
+        regions,
+        min_distance=max(
+            float(DELIVERY_WAYPOINT_STEP_SIZE),
+            float(RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS),
+        ),
+        max_distance=float(DELIVERY_RED_CROSS_LOOKAHEAD_DISTANCE),
+        acceptance_radius=RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
+    )
+
+    if lookahead_point is not None:
+        print(
+            "Delivery dynamic replan: using red-cross lookahead waypoint {}".format(
+                lookahead_point,
+            )
+        )
+        return lookahead_point
+
     waypoints = simplify_path_for_robot(
         robot_path,
         min_spacing=DELIVERY_WAYPOINT_STEP_SIZE,
     )
 
     candidates = waypoints[1:] if len(waypoints) > 1 else []
+    safe_simplified_point = None
 
     for point in candidates:
         if segment_intersects_regions(start_point, point, regions):
@@ -806,7 +849,15 @@ def choose_safe_delivery_waypoint(robot_path, start_point, target_point, regions
                 )
             )
             continue
-        return point
+        safe_simplified_point = point
+
+    if safe_simplified_point is not None:
+        print(
+            "Delivery dynamic replan: using farthest safe simplified waypoint {}".format(
+                safe_simplified_point,
+            )
+        )
+        return safe_simplified_point
 
     safe_point = None
 
@@ -910,6 +961,11 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
                     target_point,
                 )
             )
+            set_vision_path_overlay(
+                [start_point, target_point],
+                label=label,
+                color=(0, 255, 255),
+            )
             return goto_map_point_with_pose(
                 sock,
                 camera,
@@ -945,6 +1001,22 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
         if next_point is None:
             print("{}: could not choose a safe next waypoint around the red cross".format(label))
             return False
+
+        set_vision_path_overlay(
+            [
+                {
+                    "points": robot_path,
+                    "label": "{} planned route".format(label),
+                    "color": (255, 0, 255),
+                },
+                {
+                    "points": [start_point, next_point],
+                    "label": "{} lookahead".format(label),
+                    "color": (0, 255, 255),
+                },
+            ],
+            label=label,
+        )
 
         print(
             "{} dynamic replan {}: moving from {} toward {} via {}".format(
