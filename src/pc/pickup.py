@@ -31,6 +31,7 @@ from path_obstacles import (
     segment_intersects_regions,
 )
 from robot_sync import (
+    back_off_from_red_cross,
     goto_then_sync,
     goto_map_point_with_pose_pre_turn,
     map_xy_to_ev3_xy,
@@ -75,6 +76,7 @@ from settings import (
     PICKUP_SETTLE_SECONDS,
     PICKUP_STOP_DISTANCE,
     PICKUP_WAYPOINT_STEP_SIZE,
+    RED_CROSS_BACKOFF_MAX_ATTEMPTS,
     RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
     ROBOT_POSE_RETRY_FRAMES,
     SYNC_DELAY_SECONDS,
@@ -708,6 +710,7 @@ def final_scoop_forward_before_close(
 def servo_align_and_approach_ball(sock, camera, ball_color="W"):
     """Final camera-servo pickup controller."""
     last_scene = None
+    red_cross_backoff_count = 0
 
     for iteration in range(1, PICKUP_SERVO_MAX_ITERATIONS + 1):
         scene = capture_pickup_scene(camera, ball_color=ball_color)
@@ -733,6 +736,46 @@ def servo_align_and_approach_ball(sock, camera, ball_color="W"):
         if robot_pose is None:
             print("Pickup servo: missing robot detection")
             return False
+
+        red_cross_regions = red_cross_obstacle_regions(
+            planning_matrix_from_scene(scene),
+            scene.get("vision_scene"),
+            margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+        )
+        servo_center_point = (int(round(robot_pose[1])), int(round(robot_pose[0])))
+        robot_inside_clearance = point_in_obstacle_regions(servo_center_point, red_cross_regions)
+        grappler_inside_clearance = point_in_obstacle_regions(grappler_point, red_cross_regions)
+
+        if robot_inside_clearance or grappler_inside_clearance:
+            if red_cross_backoff_count >= RED_CROSS_BACKOFF_MAX_ATTEMPTS:
+                print(
+                    "Pickup servo: still inside the red-cross clearance after {} backoff(s); "
+                    "giving up this attempt".format(red_cross_backoff_count)
+                )
+                return False
+
+            blocked_part = "robot center" if robot_inside_clearance else "claw"
+            print(
+                "Pickup servo: {} is inside the red-cross clearance; backing away "
+                "instead of stopping (backoff {}/{})".format(
+                    blocked_part,
+                    red_cross_backoff_count + 1,
+                    RED_CROSS_BACKOFF_MAX_ATTEMPTS,
+                )
+            )
+
+            if not back_off_from_red_cross(
+                sock,
+                robot_pose=robot_pose,
+                regions=red_cross_regions,
+                label="Pickup servo",
+            ):
+                return False
+
+            red_cross_backoff_count += 1
+            continue
+
+        red_cross_backoff_count = 0
 
         if ball_point is None:
             if scene.get("pickup_blocked_by_red_cross"):

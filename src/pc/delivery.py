@@ -28,6 +28,7 @@ from path_obstacles import (
     segment_intersects_regions,
 )
 from robot_sync import (
+    back_off_from_red_cross,
     goto_then_sync_with_pre_turn,
     goto_map_point_with_pose,
     normalize_turn_angle,
@@ -84,6 +85,7 @@ from settings import (
     MAP_WIDTH,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     PICKUP_SETTLE_SECONDS,
+    RED_CROSS_BACKOFF_MAX_ATTEMPTS,
     RED_CROSS_WAYPOINT_ACCEPTANCE_RADIUS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
     ROBOT_POSE_RETRY_FRAMES,
@@ -919,6 +921,8 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
             print("{}: could not detect robot pose for delivery move".format(label))
             return False
 
+    red_cross_backoff_count = 0
+
     for step in range(1, max(1, int(DELIVERY_DYNAMIC_REPLAN_MAX_STEPS)) + 1):
         fresh_scene = capture_delivery_scene_with_red_cross(
             camera,
@@ -989,6 +993,20 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
                     robot_path,
                 )
             )
+
+            if (
+                point_in_obstacle_regions(start_point, regions)
+                and red_cross_backoff_count < RED_CROSS_BACKOFF_MAX_ATTEMPTS
+                and back_off_from_red_cross(
+                    sock,
+                    robot_pose=robot_pose,
+                    regions=regions,
+                    label="{} red-cross escape".format(label),
+                )
+            ):
+                red_cross_backoff_count += 1
+                continue
+
             return False
 
         next_point = choose_safe_delivery_waypoint(
@@ -1000,6 +1018,20 @@ def goto_delivery_target(sock, camera, scene, robot_pose, target_point, label="D
 
         if next_point is None:
             print("{}: could not choose a safe next waypoint around the red cross".format(label))
+
+            if (
+                point_in_obstacle_regions(start_point, regions)
+                and red_cross_backoff_count < RED_CROSS_BACKOFF_MAX_ATTEMPTS
+                and back_off_from_red_cross(
+                    sock,
+                    robot_pose=robot_pose,
+                    regions=regions,
+                    label="{} red-cross escape".format(label),
+                )
+            ):
+                red_cross_backoff_count += 1
+                continue
+
             return False
 
         set_vision_path_overlay(

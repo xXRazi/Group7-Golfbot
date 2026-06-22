@@ -16,6 +16,11 @@ from settings import (
     MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS,
     MISSING_GRAPPLER_REVERSE_SPEED,
     PATH_PRETURN_HEADING_TOLERANCE,
+    RED_CROSS_BACKOFF_ENABLED,
+    RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND,
+    RED_CROSS_BACKOFF_SECONDS,
+    RED_CROSS_BACKOFF_SETTLE_SECONDS,
+    RED_CROSS_BACKOFF_SPEED,
     PICKUP_FINAL_HEADING_TOLERANCE,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
@@ -248,6 +253,90 @@ def reverse_for_missing_grappler(sock, label="Missing grappler"):
         return False
 
     time.sleep(reverse_seconds)
+
+    if not send_command(sock, build_setspeed(0, 0)):
+        return False
+
+    if settle_seconds > 0.0:
+        time.sleep(settle_seconds)
+
+    return True
+
+
+def _red_cross_region_center(region):
+    top, left, bottom, right = region
+    return ((float(top) + float(bottom)) / 2.0, (float(left) + float(right)) / 2.0)
+
+
+def _nearest_red_cross_center(point, regions):
+    """Return the cross-region center closest to ``point`` (row, col)."""
+    centers = [_red_cross_region_center(region) for region in regions]
+
+    if not centers:
+        return None
+
+    return min(centers, key=lambda center: point_distance(point, center))
+
+
+def back_off_from_red_cross(sock, robot_pose=None, regions=None, label="Red cross backoff"):
+    """
+    Nudge the robot a short distance away from the red cross.
+
+    This is the recovery used when the robot center or claw lands inside the
+    red-cross safety clearance. Instead of stopping, the robot moves a little so
+    the next planning pass can route around the cross again.
+
+    When the robot pose and the cross regions are known, the direction is chosen
+    so the robot moves *away* from the nearest cross center: it reverses when the
+    cross is ahead and (optionally) drives forward when the cross is behind. With
+    no pose/regions available it falls back to a plain reverse, which is the safe
+    default because the claw sits at the front of the robot.
+    """
+    if not RED_CROSS_BACKOFF_ENABLED:
+        print("{}: red cross backoff is disabled".format(label))
+        return False
+
+    speed_magnitude = abs(int(round(RED_CROSS_BACKOFF_SPEED)))
+    backoff_seconds = max(0.0, float(RED_CROSS_BACKOFF_SECONDS))
+    settle_seconds = max(0.0, float(RED_CROSS_BACKOFF_SETTLE_SECONDS))
+
+    if backoff_seconds <= 0.0 or speed_magnitude == 0:
+        print("{}: red cross backoff has no movement configured".format(label))
+        return False
+
+    direction = -1
+    relation = "reversing (cross assumed ahead)"
+
+    if robot_pose is not None and regions:
+        center_point = robot_center_point(robot_pose)
+        cross_center = _nearest_red_cross_center(center_point, regions)
+
+        if cross_center is not None:
+            _center_x, _center_y, heading = robot_pose
+            bearing_to_cross = heading_from_map_points(center_point, cross_center)
+            angle_to_cross = normalize_turn_angle(float(bearing_to_cross) - float(heading))
+
+            if abs(angle_to_cross) > 90.0 and RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND:
+                direction = 1
+                relation = "driving forward (cross behind, angle {:.1f})".format(angle_to_cross)
+            else:
+                relation = "reversing (cross ahead, angle {:.1f})".format(angle_to_cross)
+
+    speed = direction * speed_magnitude
+
+    print(
+        "{}: moving away from the red cross by {} at speed {} for {:.2f}s".format(
+            label,
+            relation,
+            speed,
+            backoff_seconds,
+        )
+    )
+
+    if not send_command(sock, build_setspeed(speed, speed)):
+        return False
+
+    time.sleep(backoff_seconds)
 
     if not send_command(sock, build_setspeed(0, 0)):
         return False

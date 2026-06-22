@@ -169,6 +169,25 @@ MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS = _env_float(
     "GOLFBOT_MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS",
     0.15,
 )
+
+# Red cross backoff recovery. When the robot center or claw ends up inside the
+# red-cross safety clearance, the robot used to stop and refuse to move. Instead
+# it now nudges a short distance away from the cross and then re-plans. The nudge
+# normally reverses (the claw is at the front, so the cross is usually ahead);
+# set GOLFBOT_RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND=0 to always reverse even when
+# the cross is detected behind the robot.
+RED_CROSS_BACKOFF_ENABLED = _env_bool("GOLFBOT_RED_CROSS_BACKOFF", True)
+RED_CROSS_BACKOFF_SPEED = _env_int("GOLFBOT_RED_CROSS_BACKOFF_SPEED", 18)
+RED_CROSS_BACKOFF_SECONDS = _env_float("GOLFBOT_RED_CROSS_BACKOFF_SECONDS", 0.5)
+RED_CROSS_BACKOFF_SETTLE_SECONDS = _env_float(
+    "GOLFBOT_RED_CROSS_BACKOFF_SETTLE_SECONDS",
+    0.15,
+)
+RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND = _env_bool(
+    "GOLFBOT_RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND",
+    True,
+)
+RED_CROSS_BACKOFF_MAX_ATTEMPTS = _env_int("GOLFBOT_RED_CROSS_BACKOFF_MAX_ATTEMPTS", 8)
 PICKUP_BALL_COLORS = tuple(
     color.strip().upper()
     for color in os.getenv("GOLFBOT_PICKUP_BALL_COLORS", "W,O").split(",")
