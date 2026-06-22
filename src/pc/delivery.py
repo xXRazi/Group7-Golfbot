@@ -67,7 +67,6 @@ from settings import (
     DELIVERY_GOAL_DISTANCE_REVERSE_SPEED,
     DELIVERY_GOAL_PREFERENCE,
     DELIVERY_HEADING_TOLERANCE,
-    DELIVERY_ORANGE_BALL_GOAL,
     DELIVERY_MIN_CENTER_GOAL_DISTANCE,
     DELIVERY_MIN_CLAW_GOAL_DISTANCE,
     DELIVERY_PREFER_VISION_GOALS,
@@ -571,18 +570,7 @@ def choose_delivery_goal(robot_pose, goal_a, goal_b, preference=DELIVERY_GOAL_PR
     return min(options, key=lambda option: point_distance(robot_center, option["waypoint"]))
 
 
-def delivery_goal_preference_for_ball(ball_color):
-    normalized_color = str(ball_color or "").strip().upper()
-
-    if normalized_color == "O" and DELIVERY_ORANGE_BALL_GOAL in ("A", "B"):
-        print(
-            "Delivery: orange ball detected; forcing Goal_{} ({})".format(
-                DELIVERY_ORANGE_BALL_GOAL,
-                "right/small" if DELIVERY_ORANGE_BALL_GOAL == "A" else "left/big",
-            )
-        )
-        return DELIVERY_ORANGE_BALL_GOAL
-
+def delivery_goal_preference_for_ball(_ball_color):
     return DELIVERY_GOAL_PREFERENCE
 
 
@@ -1199,7 +1187,7 @@ def choose_fresh_delivery_option(sock, camera, goal_name):
 
     if robot_pose is None:
         print("Delivery verify: could not detect robot pose")
-        return None, None, None, None
+        return scene, None, grappler_point, None
 
     if goals is None:
         print("Delivery verify: could not detect both goal markers")
@@ -1221,6 +1209,15 @@ def verify_delivery_alignment(sock, camera, goal_name, initial_option):
         scene, robot_pose, grappler_point, fresh_option = choose_fresh_delivery_option(sock, camera, goal_name)
 
         if robot_pose is None:
+            if (
+                attempt <= max_attempts
+                and scene is not None
+                and grappler_point is None
+                and robot_body_visible(scene["vision_scene"])
+            ):
+                if not reverse_for_missing_grappler(sock, label="Delivery verify"):
+                    return False
+                continue
             return False
 
         if grappler_point is None:
@@ -1412,6 +1409,8 @@ def deliver_held_ball_to_goal(sock, camera, ball_color=None):
 
     if robot_pose is None:
         print("Delivery: could not detect robot pose")
+        if scene.get("grappler_point") is None and robot_body_visible(scene["vision_scene"]):
+            reverse_for_missing_grappler(sock, label="Delivery start")
         return False
 
     if goals is None:
@@ -1441,6 +1440,8 @@ def deliver_held_ball_to_goal(sock, camera, ball_color=None):
 
     if robot_pose is None:
         print("Delivery: could not detect robot pose after safety staging")
+        if scene.get("grappler_point") is None and robot_body_visible(scene["vision_scene"]):
+            reverse_for_missing_grappler(sock, label="Delivery after safety staging")
         return False
 
     if goals is None:

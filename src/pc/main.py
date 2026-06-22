@@ -30,7 +30,7 @@ from path_obstacles import (
     red_cross_obstacle_regions,
 )
 from pickup import approach_ball_and_close_claw
-from robot_sync import reverse_for_missing_grappler
+from robot_sync import back_off_from_red_cross, reverse_for_missing_grappler
 from scene_analysis import robot_body_visible
 from settings import (
     ALLOW_COLOR_DETECTION_FALLBACK,
@@ -39,10 +39,14 @@ from settings import (
     EV3_MAP_WIDTH,
     FRAME_CAPTURE_INTERVAL_SECONDS,
     IMAGE_DIR,
+    MAP_HEIGHT,
     MAP_WIDTH,
     PICKUP_BALL_COLORS,
     PICKUP_BALL_ENDPOINT_CLEAR_RADIUS,
+    PICKUP_CORNER_PRIORITY_MARGIN,
     PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    PICKUP_SAFE_BALL_PRIORITY_ENABLED,
+    PICKUP_WALL_PRIORITY_MARGIN,
     STARTUP_DELAY_SECONDS,
     STOP_AFTER_SUCCESSFUL_DELIVERY,
 )
@@ -146,17 +150,42 @@ def clear_pickup_ball_endpoint(
     )
 
 
-def map_half_for_point(point):
-    _row, col = point
-    return "left" if float(col) < MAP_WIDTH / 2.0 else "right"
+def ball_wall_distances(point):
+    row, col = point
+    row = float(row)
+    col = float(col)
+    return {
+        "top": row,
+        "bottom": float(MAP_HEIGHT - 1) - row,
+        "left": col,
+        "right": float(MAP_WIDTH - 1) - col,
+    }
 
 
-def orange_priority_is_active(ball_color, robot_pose, ball_point):
-    if str(ball_color).strip().upper() != "O":
-        return False
+def ball_safety_priority(point):
+    if not PICKUP_SAFE_BALL_PRIORITY_ENABLED:
+        return 0, "normal", None
 
-    robot_point = robot_center_point(robot_pose)
-    return map_half_for_point(robot_point) == map_half_for_point(ball_point)
+    distances = ball_wall_distances(point)
+    wall_distance = min(distances.values())
+    corner_margin = max(0.0, float(PICKUP_CORNER_PRIORITY_MARGIN))
+    wall_margin = max(0.0, float(PICKUP_WALL_PRIORITY_MARGIN))
+    near_top_or_bottom = (
+        distances["top"] <= corner_margin
+        or distances["bottom"] <= corner_margin
+    )
+    near_left_or_right = (
+        distances["left"] <= corner_margin
+        or distances["right"] <= corner_margin
+    )
+
+    if corner_margin > 0.0 and near_top_or_bottom and near_left_or_right:
+        return 2, "corner", wall_distance
+
+    if wall_margin > 0.0 and wall_distance <= wall_margin:
+        return 1, "wall", wall_distance
+
+    return 0, "open", wall_distance
 
 
 def sort_balls_by_pickup_priority(ball_targets, grapler_point, robot_pose):
@@ -165,26 +194,50 @@ def sort_balls_by_pickup_priority(ball_targets, grapler_point, robot_pose):
     for target in ball_targets:
         point = target["point"]
         distance = point_distance(grapler_point, point)
-        orange_priority = orange_priority_is_active(target["color"], robot_pose, point)
-        priority = 0 if orange_priority else 1
-        paired_targets.append((priority, distance, orange_priority, target))
+        safety_priority, safety_label, wall_distance = ball_safety_priority(point)
+        paired_targets.append(
+            (
+                safety_priority,
+                distance,
+                safety_label,
+                wall_distance,
+                target,
+            )
+        )
 
     paired_targets.sort(key=lambda item: (item[0], item[1]))
     sorted_targets = [
-        target for _priority, _distance, _orange_priority, target in paired_targets
+        target
+        for (
+            _safety_priority,
+            _distance,
+            _safety_label,
+            _wall_distance,
+            target,
+        ) in paired_targets
     ]
 
     print(
         "Pickup ball targets by priority:",
         [
-            "{}@{}:priority={},distance={:.1f},orange_same_half={}".format(
+            "{}@{}:safety={}({}),distance={:.1f}".format(
                 target["color"],
                 target["point"],
-                priority,
+                safety_label,
+                (
+                    "wall_distance={:.1f}".format(wall_distance)
+                    if wall_distance is not None
+                    else "wall_distance=n/a"
+                ),
                 distance,
-                orange_priority,
             )
-            for priority, distance, orange_priority, target in paired_targets
+            for (
+                safety_priority,
+                distance,
+                safety_label,
+                wall_distance,
+                target,
+            ) in paired_targets
         ],
     )
     return sorted_targets
@@ -272,6 +325,32 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None, path_matrix
         print("No robot pose detected; cannot collect ball")
         return None
 
+    pickup_cross_regions = red_cross_obstacle_regions(
+        path_matrix,
+        vision_scene,
+        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
+    )
+
+    if sock is not None and pickup_cross_regions:
+        robot_point = robot_center_point(current_robot_pose)
+        robot_inside_clearance = point_in_obstacle_regions(robot_point, pickup_cross_regions)
+        grappler_inside_clearance = point_in_obstacle_regions(grapler_point, pickup_cross_regions)
+
+        if robot_inside_clearance or grappler_inside_clearance:
+            blocked_part = "robot center" if robot_inside_clearance else "claw"
+            print(
+                "Pickup target: {} is inside the red-cross clearance; escaping before planning".format(
+                    blocked_part,
+                )
+            )
+            back_off_from_red_cross(
+                sock,
+                robot_pose=current_robot_pose,
+                regions=pickup_cross_regions,
+                label="Pickup target",
+            )
+            return None
+
     if not ball_targets:
         print("No pickup balls detected for colors {}".format(PICKUP_BALL_COLORS))
         return None
@@ -281,12 +360,6 @@ def detect_pickup_target(color_matrix, vision_scene=None, sock=None, path_matrix
         grapler_point,
         current_robot_pose,
     )
-    pickup_cross_regions = red_cross_obstacle_regions(
-        path_matrix,
-        vision_scene,
-        margin=PICKUP_RED_CROSS_CLEARANCE_MARGIN,
-    )
-
     for selected_ball in ball_targets:
         selected_ball_point = selected_ball["point"]
         selected_ball_color = selected_ball["color"]
@@ -366,6 +439,7 @@ def handle_pickup_and_delivery(sock, camera, state, path_matrix, pickup_target):
         current_robot_pose=pickup_target["robot_pose"],
         ball_color=pickup_target["ball_color"],
         open_claw=not state.pickup_started,
+        target_ball_point=pickup_target["ball_point"],
     )
 
     state.pickup_started = True

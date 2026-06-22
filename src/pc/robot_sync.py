@@ -1,3 +1,4 @@
+import math
 import time
 
 from camera import detect_vision_from_warped_frame, read_arena_frame, save_frame
@@ -21,6 +22,9 @@ from settings import (
     RED_CROSS_BACKOFF_SECONDS,
     RED_CROSS_BACKOFF_SETTLE_SECONDS,
     RED_CROSS_BACKOFF_SPEED,
+    RED_CROSS_ESCAPE_DISTANCE,
+    RED_CROSS_ESCAPE_GOTO_ENABLED,
+    RED_CROSS_ESCAPE_SETTLE_SECONDS,
     PICKUP_FINAL_HEADING_TOLERANCE,
     PICKUP_FINAL_SYNC_DELAY_SECONDS,
     ROBOT_POSE_RETRY_DELAY_SECONDS,
@@ -28,6 +32,7 @@ from settings import (
     SYNC_DELAY_SECONDS,
     SYNC_IMAGE_PATH,
 )
+from path_obstacles import point_in_obstacle_regions
 from vision_debug_capture import save_missing_detection_frame
 from vision_detection import has_vision_path_overlay, set_vision_path_overlay
 
@@ -278,23 +283,127 @@ def _nearest_red_cross_center(point, regions):
     return min(centers, key=lambda center: point_distance(point, center))
 
 
+def _rotate_map_vector(row_delta, col_delta, degrees):
+    angle = math.radians(float(degrees))
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    rotated_col = float(col_delta) * cos_a - float(row_delta) * sin_a
+    rotated_row = float(col_delta) * sin_a + float(row_delta) * cos_a
+    return rotated_row, rotated_col
+
+
+def _unit_away_from_cross(center_point, cross_center, robot_heading):
+    row_delta = float(center_point[0]) - float(cross_center[0])
+    col_delta = float(center_point[1]) - float(cross_center[1])
+    distance = math.hypot(row_delta, col_delta)
+
+    if distance > 0.001:
+        return row_delta / distance, col_delta / distance
+
+    fallback_heading = math.radians(float(robot_heading) + 180.0)
+    return math.sin(fallback_heading), math.cos(fallback_heading)
+
+
+def red_cross_escape_candidates(robot_pose, regions):
+    if robot_pose is None or not regions:
+        return []
+
+    center_point = robot_center_point(robot_pose)
+    cross_center = _nearest_red_cross_center(center_point, regions)
+
+    if cross_center is None:
+        return []
+
+    _center_x, _center_y, heading = robot_pose
+    unit_row, unit_col = _unit_away_from_cross(center_point, cross_center, heading)
+    base_distance = max(20.0, float(RED_CROSS_ESCAPE_DISTANCE))
+    current_cross_distance = point_distance(center_point, cross_center)
+    candidates = []
+    seen = set()
+
+    for distance_scale in (1.0, 1.35):
+        for angle in (0.0, 35.0, -35.0, 70.0, -70.0, 110.0, -110.0, 180.0):
+            row_vector, col_vector = _rotate_map_vector(unit_row, unit_col, angle)
+            raw_point = (
+                float(center_point[0]) + row_vector * base_distance * distance_scale,
+                float(center_point[1]) + col_vector * base_distance * distance_scale,
+            )
+            point = clamp_map_point(raw_point, margin=15)
+
+            if point in seen or point == center_point:
+                continue
+
+            seen.add(point)
+
+            if point_in_obstacle_regions(point, regions):
+                continue
+
+            if point_distance(point, cross_center) <= current_cross_distance + 10.0:
+                continue
+
+            candidates.append(point)
+
+    return candidates
+
+
+def goto_red_cross_escape_point(sock, robot_pose, regions, label):
+    if not RED_CROSS_ESCAPE_GOTO_ENABLED:
+        return False
+
+    candidates = red_cross_escape_candidates(robot_pose, regions)
+
+    if not candidates:
+        return False
+
+    center_point = robot_center_point(robot_pose)
+    target_point = candidates[0]
+    target_x, target_y = map_point_to_ev3_xy(target_point)
+
+    print(
+        "{}: escaping red cross with map-space GOTO from {} to {} "
+        "(ev3=({}, {}))".format(
+            label,
+            center_point,
+            target_point,
+            target_x,
+            target_y,
+        )
+    )
+    set_vision_path_overlay(
+        [center_point, target_point],
+        label="{} escape".format(label),
+        color=(0, 255, 255),
+    )
+
+    if not sync_robot_pose_value(sock, robot_pose, label="{} escape".format(label)):
+        return False
+
+    if not send_command(sock, build_goto(target_x, target_y)):
+        return False
+
+    time.sleep(max(0.0, float(RED_CROSS_ESCAPE_SETTLE_SECONDS)))
+    return True
+
+
 def back_off_from_red_cross(sock, robot_pose=None, regions=None, label="Red cross backoff"):
     """
-    Nudge the robot a short distance away from the red cross.
+    Move the robot away from the red cross.
 
     This is the recovery used when the robot center or claw lands inside the
     red-cross safety clearance. Instead of stopping, the robot moves a little so
     the next planning pass can route around the cross again.
 
-    When the robot pose and the cross regions are known, the direction is chosen
-    so the robot moves *away* from the nearest cross center: it reverses when the
-    cross is ahead and (optionally) drives forward when the cross is behind. With
-    no pose/regions available it falls back to a plain reverse, which is the safe
-    default because the claw sits at the front of the robot.
+    When the robot pose and the cross regions are known, this sends a GOTO to a
+    map-space point farther from the nearest cross center. With no pose/regions
+    available it falls back to a plain speed pulse, which is the safe default
+    because the claw sits at the front of the robot.
     """
     if not RED_CROSS_BACKOFF_ENABLED:
         print("{}: red cross backoff is disabled".format(label))
         return False
+
+    if goto_red_cross_escape_point(sock, robot_pose, regions, label):
+        return True
 
     speed_magnitude = abs(int(round(RED_CROSS_BACKOFF_SPEED)))
     backoff_seconds = max(0.0, float(RED_CROSS_BACKOFF_SECONDS))

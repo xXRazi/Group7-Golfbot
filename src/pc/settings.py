@@ -120,7 +120,7 @@ STARTUP_DELAY_SECONDS = 2
 VISION_DETECTION_ENABLED = _env_bool("GOLFBOT_USE_VISION", True)
 VISION_MODEL_PATH = os.getenv(
     "GOLFBOT_VISION_MODEL_PATH",
-    os.path.join(BASE_DIR, "models", "robotvision_v4_best.pt"),
+    os.path.join(BASE_DIR, "models", "robotvision_v5_best.pt"),
 )
 VISION_CONFIDENCE = _env_float("GOLFBOT_VISION_CONFIDENCE", 0.45)
 VISION_IOU = _env_float("GOLFBOT_VISION_IOU", 0.7)
@@ -171,12 +171,13 @@ MISSING_GRAPPLER_REVERSE_SETTLE_SECONDS = _env_float(
 )
 
 # Red cross backoff recovery. When the robot center or claw ends up inside the
-# red-cross safety clearance, the robot used to stop and refuse to move. Instead
-# it now nudges a short distance away from the cross and then re-plans. The nudge
-# normally reverses (the claw is at the front, so the cross is usually ahead);
-# set GOLFBOT_RED_CROSS_BACKOFF_FORWARD_WHEN_BEHIND=0 to always reverse even when
-# the cross is detected behind the robot.
+# red-cross safety clearance, the robot drives toward a map-space escape point
+# away from the cross and then re-plans. If pose/cross data is missing, it falls
+# back to the old timed forward/reverse nudge.
 RED_CROSS_BACKOFF_ENABLED = _env_bool("GOLFBOT_RED_CROSS_BACKOFF", True)
+RED_CROSS_ESCAPE_GOTO_ENABLED = _env_bool("GOLFBOT_RED_CROSS_ESCAPE_GOTO", True)
+RED_CROSS_ESCAPE_DISTANCE = _env_float("GOLFBOT_RED_CROSS_ESCAPE_DISTANCE", 30.0)
+RED_CROSS_ESCAPE_SETTLE_SECONDS = _env_float("GOLFBOT_RED_CROSS_ESCAPE_SETTLE_SECONDS", 0.35)
 RED_CROSS_BACKOFF_SPEED = _env_int("GOLFBOT_RED_CROSS_BACKOFF_SPEED", 18)
 RED_CROSS_BACKOFF_SECONDS = _env_float("GOLFBOT_RED_CROSS_BACKOFF_SECONDS", 0.5)
 RED_CROSS_BACKOFF_SETTLE_SECONDS = _env_float(
@@ -193,11 +194,10 @@ PICKUP_BALL_COLORS = tuple(
     for color in os.getenv("GOLFBOT_PICKUP_BALL_COLORS", "W,O").split(",")
     if color.strip()
 )
-PICKUP_BALL_COLOR_PRIORITY = tuple(
-    color.strip().upper()
-    for color in os.getenv("GOLFBOT_PICKUP_BALL_COLOR_PRIORITY", "O,W").split(",")
-    if color.strip()
-)
+PICKUP_SAFE_BALL_PRIORITY_ENABLED = _env_bool("GOLFBOT_PICKUP_SAFE_BALL_PRIORITY", True)
+PICKUP_WALL_PRIORITY_MARGIN = _env_float("GOLFBOT_PICKUP_WALL_PRIORITY_MARGIN", 35.0)
+PICKUP_CORNER_PRIORITY_MARGIN = _env_float("GOLFBOT_PICKUP_CORNER_PRIORITY_MARGIN", 45.0)
+PICKUP_TARGET_MATCH_MAX_DISTANCE = _env_float("GOLFBOT_PICKUP_TARGET_MATCH_MAX_DISTANCE", 90.0)
 
 # Coarse pickup path tuning.
 PICKUP_STOP_DISTANCE = 10
@@ -236,10 +236,6 @@ PICKUP_OFFCENTER_SCOOP_SCALE_LIMIT = _env_float("GOLFBOT_PICKUP_OFFCENTER_SCOOP_
 
 # Delivery settings.
 DELIVERY_GOAL_PREFERENCE = "nearest"
-DELIVERY_ORANGE_BALL_GOAL = os.getenv(
-    "GOLFBOT_DELIVERY_ORANGE_BALL_GOAL",
-    "A",
-).strip().upper()
 DELIVERY_USE_FIXED_GOALS = _env_bool("GOLFBOT_DELIVERY_USE_FIXED_GOALS", True)
 DELIVERY_PREFER_VISION_GOALS = _env_bool("GOLFBOT_DELIVERY_PREFER_VISION_GOALS", False)
 DELIVERY_FIXED_GOAL_ROW_RATIO = _env_float("GOLFBOT_DELIVERY_FIXED_GOAL_ROW_RATIO", 0.5)
